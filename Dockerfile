@@ -12,25 +12,21 @@ COPY . .
 RUN npm run build           # Next.js will compile and output into .next
 
 # --- runtime stage ---
-# smaller image with only production dependencies
 FROM node:20-alpine AS runner
 WORKDIR /app
 
-# copy built output
+# copy built Next.js output
 COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/package-lock.json ./package-lock.json
 
-# install all dependencies (tsx is needed at runtime)
-RUN npm ci
-
-# copy any other runtime files (e.g. server.ts compiled if you precompile)
-# since we are using tsx to run the server, we still need it and tsx, so
-# alternatively precompile server.ts with tsc and COPY dist/server.js here.
+# copy source files needed at runtime (for tsx to resolve imports)
 COPY --from=builder /app/server.ts ./server.ts
+COPY --from=builder /app/lib ./lib
+COPY --from=builder /app/app ./app
 
 ENV NODE_ENV=production
 EXPOSE 3000
 
-# run using tsx so we don't need to transpile at runtime
-CMD ["npx","tsx","server.ts"]
+# run the custom server (which includes Socket.io)
+CMD ["npx", "tsx", "server.ts"]
