@@ -193,6 +193,10 @@ app.prepare().then(() => {
     socket.on('addCredits', ({ roomId, amount }) => {
       const game = games[roomId];
       if (!game) return;
+      // Prevent adding credits during active gameplay
+      if (game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN') {
+        return;
+      }
       const player = game.players.find(p => p.id === socket.id);
       if (player) {
         player.credits += amount;
@@ -259,6 +263,11 @@ app.prepare().then(() => {
         }
         game.logs.push(`${currentPlayer.name} checked.`);
       } else if (action === 'call') {
+        // Cannot call if already all-in
+        if (currentPlayer.credits === 0) {
+          game.logs.push(`${currentPlayer.name} is already all in.`);
+          return;
+        }
         const callAmount = Math.min(game.currentBet - currentPlayer.betThisRound, currentPlayer.credits);
         if (callAmount > 0) {
           currentPlayer.credits -= callAmount;
@@ -602,7 +611,13 @@ app.prepare().then(() => {
     }
 
     // Phase transition logic
-    if (game.turnIndex === 0) {
+    // Find the first active player after the dealer
+    let firstActiveAfterDealer = (game.dealerIndex + 1) % game.players.length;
+    while (game.players[firstActiveAfterDealer].isFolded || game.players[firstActiveAfterDealer].isSpectator) {
+      firstActiveAfterDealer = (firstActiveAfterDealer + 1) % game.players.length;
+    }
+
+    if (game.turnIndex === firstActiveAfterDealer) {
       if (game.currentPhase === 'CARD') {
         game.currentPhase = 'BETTING';
         game.currentBet = 0;
@@ -681,7 +696,7 @@ app.prepare().then(() => {
     game.logs.push(`Winner: ${winner.name} with ${results[0].evaluation.rankName}`);
     
     winner.credits += game.handPot;
-    if (results[0].evaluation.sum === 0) {
+    if (results[0].evaluation.isSpecialtySabacc) {
       winner.credits += game.sabaccPot;
       game.sabaccPot = 0;
       game.logs.push(`${winner.name} takes the Sabacc Pot!`);
