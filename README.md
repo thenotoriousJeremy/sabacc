@@ -26,12 +26,7 @@ docker build -t sabacc .
 docker run -p 3000:3000 sabacc
 ```
 
-#### Using Docker Compose (build locally)
-```bash
-docker-compose up
-```
-
-#### Using Docker Compose (GHCR image)
+#### Using Docker Compose (Recommended)
 ```yaml
 version: '3.8'
 
@@ -48,10 +43,7 @@ services:
 ```
 
 **Notes:**
-- Replace `thenotoriousjerry` with your GitHub username
 - The service will be available at `http://localhost:3000`
-- Watchtower automatically checks for and pulls new image versions daily
-- Remove the `watchtower` service if you prefer manual updates
 
 Start the stack:
 ```bash
@@ -73,8 +65,8 @@ This repository automatically builds and pushes Docker images to GHCR on every p
 
 Pull and run the latest image manually:
 ```bash
-docker pull ghcr.io/thenotoriousjerry/sabacc:latest
-docker run -p 3000:3000 ghcr.io/thenotoriousjerry/sabacc:latest
+docker pull ghcr.io/thenotoriousjeremy/sabacc:latest
+docker run -p 3000:3000 ghcr.io/thenotoriousjeremy/sabacc:latest
 ```
 
 ### Railway / Render / DigitalOcean
@@ -83,11 +75,6 @@ docker run -p 3000:3000 ghcr.io/thenotoriousjerry/sabacc:latest
    - `PORT=3000`
 2. **Build Command**: `npm run build`
 3. **Start Command**: `npm start` (runs `tsx server.ts`)
-
-### Vercel
-Note: Vercel's Serverless Functions do not support long-lived WebSocket connections natively. For Vercel deployment, you would typically need to use a separate backend for Socket.io (like a dedicated Node.js server on Railway) or a service like Pusher/Ably.
-
-However, if using a custom server like this one, it is best deployed on a platform that supports persistent processes (Railway, Render, Fly.io, etc.)
 
 ## Game Rules
 
@@ -120,7 +107,7 @@ This implementation follows the **Corellian Spike variant** of Sabacc from Star 
 - **Sabacc Pot**: Fixed 5 credits per player (side pot)
 - **Sabacc Winner**: Gets the Sabacc Pot if they win
 
-For more details, see [Star Wars Legends - Sabacc](https://starwars.fandom.com/wiki/Sabacc).
+For more details, see [How to Play - Sabacc](https://hyperspaceprops.com/how-to-play-corellian-spike/).
 
 ## How to Play
 1. Enter your name and a Room ID.
