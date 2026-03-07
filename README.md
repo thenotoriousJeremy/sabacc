@@ -1,7 +1,10 @@
 # Corellian Spike Sabacc
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/thenotoriousjeremy/sabacc)](https://hub.docker.com/r/thenotoriousjeremy/sabacc)
-[![GitHub Release](https://img.shields.io/github/v/release/thenotoriousjeremy/corellian-spike-sabacc)](https://github.com/thenotoriousjeremy/corellian-spike-sabacc/releases)
+[![GHCR](https://img.shields.io/badge/GHCR-ghcr.io/thenotoriousjeremy/sabacc-blue)](https://github.com/thenotoriousjeremy/corellian-spike-sabacc/pkgs/container/sabacc)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/thenotoriousjeremy/corellian-spike-sabacc/ci.yml)](https://github.com/thenotoriousjeremy/corellian-spike-sabacc/actions)
+[![GitHub Stars](https://img.shields.io/github/stars/thenotoriousjeremy/corellian-spike-sabacc)](https://github.com/thenotoriousjeremy/corellian-spike-sabacc/stargazers)
+[![GitHub Issues](https://img.shields.io/github/issues/thenotoriousjeremy/corellian-spike-sabacc)](https://github.com/thenotoriousjeremy/corellian-spike-sabacc/issues)
 
 A multiplayer web-based version of the 'Corellian Spike' Sabacc game from Star Wars Legends. Experience the thrill of this classic card game with real-time multiplayer gameplay, featuring Sabacc Shifts, betting phases, and a Star Wars aesthetic.
 
