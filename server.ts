@@ -28,7 +28,7 @@ app.prepare().then(() => {
   io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
-    socket.on('joinRoom', ({ roomId, playerName, startingCredits }) => {
+    socket.on('joinRoom', ({ roomId, playerName, startingCredits, isSpectator }) => {
       socket.join(roomId);
       // @ts-ignore
       socket.roomId = roomId;
@@ -40,7 +40,7 @@ app.prepare().then(() => {
           deck: shuffle(createDeck()),
           discardPile: [],
           handPot: 0,
-          sabaccPot: 0, // Initialized here
+          sabaccPot: 0,
           currentRound: 1,
           currentPhase: 'JOINING',
           turnIndex: 0,
@@ -54,27 +54,73 @@ app.prepare().then(() => {
       }
 
       const game = games[roomId];
-      // Check if a player with this name already exists in the room
-      const existingPlayerIndex = game.players.findIndex(p => p.name === playerName);
+      const playerNameLower = playerName?.trim().toLowerCase();
+      const existingPlayerIndex = game.players.findIndex(p => p.name.trim().toLowerCase() === playerNameLower);
       
       if (existingPlayerIndex !== -1) {
-        // Re-associating existing player with new socket ID
         game.players[existingPlayerIndex].id = socket.id;
-        game.logs.push(`${playerName} reconnected.`);
+        // Update spectator status if re-joining with a specific preference
+        if (isSpectator !== undefined) {
+          game.players[existingPlayerIndex].isSpectator = !!isSpectator;
+          game.players[existingPlayerIndex].isFolded = !!isSpectator || (game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN');
+        }
+        game.logs.push(`${game.players[existingPlayerIndex].name} reconnected.`);
       } else {
+        const isMidGame = game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN';
         game.players.push({
           id: socket.id,
           name: playerName || `Player ${game.players.length + 1}`,
           hand: [],
           credits: parseInt(startingCredits) || 1000,
-          isFolded: false,
-          isReady: false,
-          betThisRound: 0
+          isFolded: !!isSpectator || isMidGame,
+          isReady: !!isSpectator,
+          betThisRound: 0,
+          isSpectator: !!isSpectator
         });
-        game.logs.push(`${playerName} joined the room.`);
+        game.logs.push(`${playerName} joined the room${isSpectator ? ' as a spectator' : (isMidGame ? ' (waiting for next game)' : '')}.`);
       }
 
       io.to(roomId).emit('gameStateUpdate', game);
+    });
+
+    socket.on('toggleSpectator', ({ roomId }) => {
+      const game = games[roomId];
+      if (!game) return;
+
+      const player = game.players.find(p => p.id === socket.id);
+      if (player) {
+        const isMidGame = game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN';
+        
+        // If trying to become a player mid-game, ignore
+        if (!player.isSpectator && isMidGame) {
+          // Already a player, can always switch to spectator (folds them)
+          player.isSpectator = true;
+          player.isFolded = true;
+          player.hand = [];
+          game.logs.push(`${player.name} switched to spectating.`);
+        } else if (player.isSpectator) {
+          // Spectator trying to join
+          if (isMidGame) {
+            // Can't join mid-game as active player
+            player.isSpectator = false;
+            player.isFolded = true;
+            game.logs.push(`${player.name} will join the next game.`);
+          } else {
+            player.isSpectator = false;
+            player.isReady = false;
+            player.isFolded = false;
+            game.logs.push(`${player.name} is now playing.`);
+          }
+        } else {
+          // Player switching to spectator in lobby
+          player.isSpectator = true;
+          player.isReady = true;
+          player.isFolded = true;
+          game.logs.push(`${player.name} is now spectating.`);
+        }
+
+        io.to(roomId).emit('gameStateUpdate', game);
+      }
     });
 
     socket.on('ready', ({ roomId }) => {
@@ -83,12 +129,19 @@ app.prepare().then(() => {
 
       const player = game.players.find(p => p.id === socket.id);
       if (player) {
+        // Enforce ante check (15 CR)
+        if (!player.isSpectator && player.credits < 15) {
+          game.logs.push(`${player.name} needs at least 15 CR to play.`);
+          io.to(roomId).emit('gameStateUpdate', game);
+          return;
+        }
         player.isReady = true;
         game.logs.push(`${player.name} is ready.`);
       }
 
-      // Start game if all ready and at least 2 players
-      if (game.players.length >= 2 && game.players.every(p => p.isReady)) {
+      // Start game if all ready and at least 2 non-spectator players
+      const activePlayers = game.players.filter(p => !p.isSpectator);
+      if (activePlayers.length >= 2 && game.players.every(p => p.isReady)) {
         startGame(game);
       }
 
@@ -133,6 +186,17 @@ app.prepare().then(() => {
       if (index !== -1) {
         const [removed] = game.players.splice(index, 1);
         game.logs.push(`${removed.name} left the room.`);
+        io.to(roomId).emit('gameStateUpdate', game);
+      }
+    });
+
+    socket.on('addCredits', ({ roomId, amount }) => {
+      const game = games[roomId];
+      if (!game) return;
+      const player = game.players.find(p => p.id === socket.id);
+      if (player) {
+        player.credits += amount;
+        game.logs.push(`${player.name} added ${amount} credits.`);
         io.to(roomId).emit('gameStateUpdate', game);
       }
     });
@@ -195,18 +259,30 @@ app.prepare().then(() => {
         }
         game.logs.push(`${currentPlayer.name} checked.`);
       } else if (action === 'call') {
-        const callAmount = game.currentBet - currentPlayer.betThisRound;
+        const callAmount = Math.min(game.currentBet - currentPlayer.betThisRound, currentPlayer.credits);
         if (callAmount > 0) {
           currentPlayer.credits -= callAmount;
           currentPlayer.betThisRound += callAmount;
           game.handPot += callAmount;
-          game.logs.push(`${currentPlayer.name} called.`);
+          if (currentPlayer.credits === 0) {
+            game.logs.push(`${currentPlayer.name} called ALL IN.`);
+          } else {
+            game.logs.push(`${currentPlayer.name} called.`);
+          }
         } else {
           game.logs.push(`${currentPlayer.name} checked.`);
         }
-      } else if (action === 'raise' || action === 'bet') {
-        const raiseTo = game.currentBet + betAmount;
-        const totalToPay = raiseTo - currentPlayer.betThisRound;
+      } else if (action === 'raise' || action === 'bet' || action === 'all_in') {
+        let totalToPay = 0;
+        let raiseTo = 0;
+
+        if (action === 'all_in') {
+          totalToPay = currentPlayer.credits;
+          raiseTo = currentPlayer.betThisRound + totalToPay;
+        } else {
+          raiseTo = game.currentBet + betAmount;
+          totalToPay = raiseTo - currentPlayer.betThisRound;
+        }
         
         if (totalToPay > currentPlayer.credits) {
           game.logs.push(`${currentPlayer.name} doesn't have enough credits.`);
@@ -216,8 +292,16 @@ app.prepare().then(() => {
         currentPlayer.credits -= totalToPay;
         currentPlayer.betThisRound += totalToPay;
         game.handPot += totalToPay;
-        game.currentBet = raiseTo;
-        game.logs.push(`${currentPlayer.name} ${action === 'bet' ? 'bet' : 'raised to'} ${raiseTo}.`);
+        
+        if (raiseTo > game.currentBet) {
+          game.currentBet = raiseTo;
+        }
+        
+        if (action === 'all_in' || currentPlayer.credits === 0) {
+          game.logs.push(`${currentPlayer.name} went ALL IN with ${totalToPay}.`);
+        } else {
+          game.logs.push(`${currentPlayer.name} ${action === 'bet' ? 'bet' : 'raised to'} ${raiseTo}.`);
+        }
       }
 
       advanceTurn(game);
@@ -289,22 +373,49 @@ app.prepare().then(() => {
     game.handPot = 0;
     game.winnerId = null;
     game.currentBet = 0;
-    game.logs.push("Game started! Round 1 Card Phase.");
+    
+    // Rotate dealer
+    game.dealerIndex = (game.dealerIndex + 1) % game.players.length;
+    game.logs.push(`Game started! ${game.players[game.dealerIndex].name} is the dealer.`);
 
     // Ante
     const ante = 10;
     const sabaccAnte = 5;
-    game.players.forEach(p => {
-      p.credits -= (ante + sabaccAnte);
-      game.handPot += ante;
-      game.sabaccPot += sabaccAnte;
-      p.hand = [game.deck.pop()!, game.deck.pop()!];
-      p.isFolded = false;
-      p.betThisRound = 0;
-    });
-    game.logs.push(`All players paid ${ante + sabaccAnte} CR ante.`);
+    const totalAnte = ante + sabaccAnte;
     
-    game.turnIndex = 0;
+    game.players.forEach(p => {
+      if (p.isSpectator) {
+        p.isFolded = true;
+        p.hand = [];
+        p.betThisRound = 0;
+        return;
+      }
+
+      if (p.credits < totalAnte) {
+        p.isFolded = true;
+        p.hand = [];
+        p.betThisRound = 0;
+        game.logs.push(`${p.name} doesn't have enough credits to ante and sits out.`);
+      } else {
+        p.credits -= totalAnte;
+        game.handPot += ante;
+        game.sabaccPot += sabaccAnte;
+        p.hand = [game.deck.pop()!, game.deck.pop()!];
+        p.isFolded = false;
+        p.betThisRound = 0;
+      }
+    });
+    game.logs.push(`Active players paid ${totalAnte} CR ante.`);
+    
+    // Set turn index to first non-spectator, non-folded player AFTER the dealer
+    let nextIndex = (game.dealerIndex + 1) % game.players.length;
+    let attempts = 0;
+    while ((game.players[nextIndex].isFolded || game.players[nextIndex].isSpectator) && attempts < game.players.length) {
+      nextIndex = (nextIndex + 1) % game.players.length;
+      attempts++;
+    }
+    game.turnIndex = nextIndex;
+    
     checkAndProcessAITurn(game);
   }
 
@@ -331,24 +442,58 @@ app.prepare().then(() => {
       if (isSabacc) {
         game.logs.push(`${currentPlayer.name} stood.`);
       } 
-      // 2. If hand is very close to 0 (absSum <= 2) and we have 3+ cards, Stand.
-      else if (absSum <= 2 && currentPlayer.hand.length >= 3) {
+      // 2. If hand is very close to 0 (absSum <= 1) and we have 3+ cards, Stand.
+      else if (absSum <= 1 && currentPlayer.hand.length >= 3) {
         game.logs.push(`${currentPlayer.name} stood.`);
       }
-      // 3. If we have only 2 cards and we are not close to 0, Draw a card.
-      else if (currentPlayer.hand.length < 3 && absSum > 5) {
-        const card = game.deck.pop();
-        if (card) currentPlayer.hand.push(card);
-        game.logs.push(`${currentPlayer.name} drew a card from the deck.`);
+      // 3. If we have only 2 cards, always Draw or Swap unless we are at 0.
+      else if (currentPlayer.hand.length < 3) {
+        // If we are far from 0, draw.
+        if (absSum > 5) {
+          const card = game.deck.pop();
+          if (card) currentPlayer.hand.push(card);
+          game.logs.push(`${currentPlayer.name} drew a card from the deck.`);
+        } else {
+          // Try to swap the worst card
+          const currentSum = evaluation.sum;
+          let bestCardToSwap = currentPlayer.hand[0];
+          let maxImpact = -1;
+
+          currentPlayer.hand.forEach(card => {
+            const impact = Math.abs(currentSum) - Math.abs(currentSum - card.value);
+            if (impact > maxImpact) {
+              maxImpact = impact;
+              bestCardToSwap = card;
+            }
+          });
+
+          const topDiscard = game.discardPile[game.discardPile.length - 1];
+          const wouldImproveWithDiscard = topDiscard && Math.abs(currentSum - bestCardToSwap.value + topDiscard.value) < Math.abs(currentSum);
+
+          if (wouldImproveWithDiscard) {
+            const cardIndex = currentPlayer.hand.findIndex(c => c.id === bestCardToSwap.id);
+            const [discarded] = currentPlayer.hand.splice(cardIndex, 1);
+            const newCard = game.discardPile.pop()!;
+            game.discardPile.push(discarded);
+            currentPlayer.hand.push(newCard);
+            game.logs.push(`${currentPlayer.name} swapped a card with the discard pile.`);
+          } else {
+            const cardIndex = currentPlayer.hand.findIndex(c => c.id === bestCardToSwap.id);
+            const [discarded] = currentPlayer.hand.splice(cardIndex, 1);
+            game.discardPile.push(discarded);
+            const newCard = game.deck.pop();
+            if (newCard) currentPlayer.hand.push(newCard);
+            game.logs.push(`${currentPlayer.name} swapped a card with the deck.`);
+          }
+        }
       } 
-      // 4. Otherwise, try to improve hand by swapping the card that contributes most to the offset.
+      // 4. If we have 3+ cards and not close to 0, try to swap or draw.
       else {
         const currentSum = evaluation.sum;
         let bestCardToSwap = currentPlayer.hand[0];
         let maxImpact = -1;
 
         currentPlayer.hand.forEach(card => {
-          // We want to swap the card that, if removed, brings us closest to 0
           const impact = Math.abs(currentSum) - Math.abs(currentSum - card.value);
           if (impact > maxImpact) {
             maxImpact = impact;
@@ -359,14 +504,20 @@ app.prepare().then(() => {
         const topDiscard = game.discardPile[game.discardPile.length - 1];
         const wouldImproveWithDiscard = topDiscard && Math.abs(currentSum - bestCardToSwap.value + topDiscard.value) < Math.abs(currentSum);
 
-        if (wouldImproveWithDiscard && Math.random() > 0.3) {
+        if (wouldImproveWithDiscard) {
           const cardIndex = currentPlayer.hand.findIndex(c => c.id === bestCardToSwap.id);
           const [discarded] = currentPlayer.hand.splice(cardIndex, 1);
           const newCard = game.discardPile.pop()!;
           game.discardPile.push(discarded);
           currentPlayer.hand.push(newCard);
           game.logs.push(`${currentPlayer.name} swapped a card with the discard pile.`);
+        } else if (absSum > 3 && currentPlayer.hand.length < 5) {
+          // If still far from 0 and not too many cards, draw.
+          const card = game.deck.pop();
+          if (card) currentPlayer.hand.push(card);
+          game.logs.push(`${currentPlayer.name} drew a card from the deck.`);
         } else {
+          // Swap with deck as last resort to improve
           const cardIndex = currentPlayer.hand.findIndex(c => c.id === bestCardToSwap.id);
           const [discarded] = currentPlayer.hand.splice(cardIndex, 1);
           game.discardPile.push(discarded);
@@ -436,7 +587,7 @@ app.prepare().then(() => {
   }
 
   function advanceTurn(game: GameState) {
-    const activePlayers = game.players.filter(p => !p.isFolded);
+    const activePlayers = game.players.filter(p => !p.isFolded && !p.isSpectator);
     
     if (activePlayers.length <= 1) {
       game.logs.push("Only one player remains. Ending round.");
@@ -446,7 +597,7 @@ app.prepare().then(() => {
     }
 
     game.turnIndex = (game.turnIndex + 1) % game.players.length;
-    while (game.players[game.turnIndex].isFolded) {
+    while (game.players[game.turnIndex].isFolded || game.players[game.turnIndex].isSpectator) {
       game.turnIndex = (game.turnIndex + 1) % game.players.length;
     }
 
@@ -539,7 +690,15 @@ app.prepare().then(() => {
     
     game.currentPhase = 'SHOWDOWN';
     game.players.forEach(p => {
-      p.isReady = p.isAI ? true : false;
+      p.isReady = (p.isAI || p.isSpectator) ? true : false;
+      
+      // Auto-switch to spectator if out of credits
+      if (!p.isSpectator && p.credits < 15) {
+        p.isSpectator = true;
+        p.isReady = true;
+        p.isFolded = true;
+        game.logs.push(`${p.name} is out of credits and switched to spectating.`);
+      }
     });
     io.to(game.roomId).emit('gameStateUpdate', game);
 

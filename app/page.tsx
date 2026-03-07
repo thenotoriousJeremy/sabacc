@@ -23,6 +23,7 @@ import {
   Settings,
   Volume2,
   VolumeX,
+  Eye,
   Pin,
   PinOff
 } from 'lucide-react';
@@ -43,6 +44,7 @@ export default function SabaccGame() {
   const [playerName, setPlayerName] = useState('');
   const [roomId, setRoomId] = useState('');
   const [startingCredits, setStartingCredits] = useState('1000');
+  const [isSpectator, setIsSpectator] = useState(false);
   const [isJoined, setIsJoined] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [isRulesPinned, setIsRulesPinned] = useState(false);
@@ -51,56 +53,166 @@ export default function SabaccGame() {
   const [chatMessage, setChatMessage] = useState('');
   const [isRollingDice, setIsRollingDice] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showAllInConfirm, setShowAllInConfirm] = useState(false);
+  const [showBuyIn, setShowBuyIn] = useState(false);
 
-  // Audio Refs for preloading and stability
-  const audioRefs = useRef<{ [key: string]: HTMLAudioElement | null }>({
-    card: null,
-    chips: null,
-    dice: null,
-    win: null,
-    fold: null
-  });
+  // Web Audio Context for synthesized sounds
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
-  useEffect(() => {
-    // Preload sounds with fallback and better error handling
-    const sounds = {
-      card: 'https://cdn.jsdelivr.net/gh/IonDen/ion.sound/sounds/card_flip.mp3',
-      chips: 'https://cdn.jsdelivr.net/gh/IonDen/ion.sound/sounds/button_tiny.mp3',
-      dice: 'https://cdn.jsdelivr.net/gh/IonDen/ion.sound/sounds/water_droplet_3.mp3',
-      win: 'https://cdn.jsdelivr.net/gh/IonDen/ion.sound/sounds/bell_ring.mp3',
-      fold: 'https://cdn.jsdelivr.net/gh/IonDen/ion.sound/sounds/branch_break.mp3'
-    };
-
-    Object.entries(sounds).forEach(([key, url]) => {
-      const audio = new Audio();
-      audio.src = url;
-      audio.preload = 'auto';
-      audio.crossOrigin = 'anonymous';
-      audioRefs.current[key] = audio;
-      
-      audio.addEventListener('error', (e) => {
-        console.error(`Failed to load audio: ${key}`, e);
-      });
-    });
-  }, []);
+  const initAudio = () => {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    if (audioCtxRef.current.state === 'suspended') {
+      audioCtxRef.current.resume();
+    }
+  };
 
   const volumeRef = useRef(volume);
   useEffect(() => {
     volumeRef.current = volume;
-    // Update volume on all preloaded audio
-    Object.values(audioRefs.current).forEach(audio => {
-      if (audio) audio.volume = volume;
-    });
   }, [volume]);
 
-  // Sound effects
-  const playSound = React.useCallback((type: 'card' | 'chips' | 'dice' | 'win' | 'fold') => {
-    const audio = audioRefs.current[type];
-    if (audio) {
-      audio.currentTime = 0;
-      audio.play().catch(err => {
-        console.warn("Audio play failed (likely browser policy):", err);
-      });
+  // Sound effects synthesizer
+  const playSound = React.useCallback((type: 'card' | 'chips' | 'dice' | 'win' | 'fold' | 'click' | 'check') => {
+    if (!audioCtxRef.current) return;
+    
+    const ctx = audioCtxRef.current;
+    if (ctx.state === 'suspended') ctx.resume();
+    
+    const now = ctx.currentTime;
+    const masterGain = ctx.createGain();
+    masterGain.gain.setValueAtTime(volumeRef.current * 0.5, now); // Global volume adjustment
+    masterGain.connect(ctx.destination);
+
+    switch (type) {
+      case 'click': {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1000, now);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+        osc.connect(gain);
+        gain.connect(masterGain);
+        osc.start();
+        osc.stop(now + 0.05);
+        break;
+      }
+      case 'check': {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(200, now);
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+        osc.connect(gain);
+        gain.connect(masterGain);
+        osc.start();
+        osc.stop(now + 0.1);
+        break;
+      }
+      case 'card': {
+        // "Swish" sound using noise and filter
+        const bufferSize = ctx.sampleRate * 0.1;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+        const noise = ctx.createBufferSource();
+        noise.buffer = buffer;
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(2000, now);
+        filter.frequency.exponentialRampToValueAtTime(800, now + 0.1);
+        filter.Q.setValueAtTime(1, now);
+
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(masterGain);
+        noise.start();
+        break;
+      }
+      case 'chips': {
+        // Metallic "clink" - two sine waves with different frequencies
+        const osc1 = ctx.createOscillator();
+        const osc2 = ctx.createOscillator();
+        const gain = ctx.createGain();
+        
+        osc1.type = 'sine';
+        osc1.frequency.setValueAtTime(2800, now);
+        osc2.type = 'sine';
+        osc2.frequency.setValueAtTime(3400, now);
+        
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+        
+        osc1.connect(gain);
+        osc2.connect(gain);
+        gain.connect(masterGain);
+        
+        osc1.start();
+        osc2.start();
+        osc1.stop(now + 0.08);
+        osc2.stop(now + 0.08);
+        break;
+      }
+      case 'dice': {
+        // Multiple short thumps with a bit of high freq content
+        for (let i = 0; i < 3; i++) {
+          const t = now + i * 0.08;
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(150, t);
+          osc.frequency.exponentialRampToValueAtTime(60, t + 0.06);
+          gain.gain.setValueAtTime(0.25, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+          osc.connect(gain);
+          gain.connect(masterGain);
+          osc.start(t);
+          osc.stop(t + 0.06);
+        }
+        break;
+      }
+      case 'win': {
+        // Bright success chime
+        const freqs = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
+        freqs.forEach((f, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(f, now + i * 0.08);
+          gain.gain.setValueAtTime(0, now + i * 0.08);
+          gain.gain.linearRampToValueAtTime(0.2, now + i * 0.08 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.01, now + i * 0.08 + 0.2);
+          osc.connect(gain);
+          gain.connect(masterGain);
+          osc.start(now + i * 0.08);
+          osc.stop(now + i * 0.08 + 0.2);
+        });
+        break;
+      }
+      case 'fold': {
+        // Low frequency "thud"
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(80, now);
+        osc.frequency.exponentialRampToValueAtTime(20, now + 0.2);
+        gain.gain.setValueAtTime(0.4, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+        osc.connect(gain);
+        gain.connect(masterGain);
+        osc.start();
+        osc.stop(now + 0.2);
+        break;
+      }
     }
   }, []);
 
@@ -116,11 +228,14 @@ export default function SabaccGame() {
   const roomIdRef = useRef(roomId);
   const startingCreditsRef = useRef(startingCredits);
 
+  const isSpectatorRef = useRef(isSpectator);
+
   useEffect(() => {
     playerNameRef.current = playerName;
     roomIdRef.current = roomId;
     startingCreditsRef.current = startingCredits;
-  }, [playerName, roomId, startingCredits]);
+    isSpectatorRef.current = isSpectator;
+  }, [playerName, roomId, startingCredits, isSpectator]);
 
   const socketRef = useRef<Socket | null>(null);
 
@@ -146,7 +261,8 @@ export default function SabaccGame() {
       newSocket.emit('joinRoom', { 
         roomId: roomIdRef.current, 
         playerName: playerNameRef.current, 
-        startingCredits: startingCreditsRef.current 
+        startingCredits: startingCreditsRef.current,
+        isSpectator: isSpectatorRef.current
       });
     });
 
@@ -185,7 +301,7 @@ export default function SabaccGame() {
 
   const joinRoom = () => {
     if (!playerName || !roomId) return;
-    socket?.emit('joinRoom', { roomId, playerName, startingCredits });
+    socket?.emit('joinRoom', { roomId, playerName, startingCredits, isSpectator });
     setIsJoined(true);
   };
 
@@ -193,8 +309,21 @@ export default function SabaccGame() {
     socket?.emit('ready', { roomId });
   };
 
+  const toggleSpectator = () => {
+    socket?.emit('toggleSpectator', { roomId });
+  };
+
   const addAI = () => {
     socket?.emit('addAI', { roomId });
+  };
+
+  const handleJoinGame = () => {
+    playSound('click');
+    if ((me?.credits || 0) < 15) {
+      setShowBuyIn(true);
+    } else {
+      toggleSpectator();
+    }
   };
 
   const removeAI = (aiId: string) => {
@@ -202,13 +331,21 @@ export default function SabaccGame() {
   };
 
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [displayedPlayers, setDisplayedPlayers] = useState<Player[]>([]);
+
+  useEffect(() => {
+    if (gameState?.players && !isRollingDice) {
+      const players = gameState.players;
+      Promise.resolve().then(() => setDisplayedPlayers(players));
+    }
+  }, [gameState?.players, isRollingDice]);
 
   const cardAction = (action: 'draw' | 'swap_deck' | 'swap_discard' | 'stand', cardId?: string) => {
     socket?.emit('cardAction', { roomId, action, cardId });
     setSelectedCardId(null);
   };
 
-  const betAction = (action: 'call' | 'raise' | 'fold' | 'check' | 'bet', amount?: string) => {
+  const betAction = (action: 'call' | 'raise' | 'fold' | 'check' | 'bet' | 'all_in', amount?: string) => {
     socket?.emit('betAction', { roomId, action, amount });
   };
 
@@ -254,7 +391,7 @@ export default function SabaccGame() {
               </div>
             </div>
             <div>
-              <label className="block text-xs uppercase tracking-widest text-amber-500/60 mb-2">Starting Credits</label>
+              <label className="block text-xs uppercase tracking-widest text-amber-500/60 mb-2">Buy-in Amount (Credits)</label>
               <div className="relative">
                 <Coins className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-amber-500/40" />
                 <input 
@@ -262,11 +399,30 @@ export default function SabaccGame() {
                   value={startingCredits}
                   onChange={(e) => setStartingCredits(e.target.value)}
                   className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 focus:outline-none focus:border-amber-500 transition-colors"
+                  min="100"
+                  max="10000"
                 />
               </div>
             </div>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => {
+                  playSound('click');
+                  setIsSpectator(!isSpectator);
+                }}
+                className={`flex-1 flex items-center gap-3 p-3 rounded-xl border transition-all ${isSpectator ? 'bg-amber-500/20 border-amber-500/50' : 'bg-white/5 border-white/10'}`}
+              >
+                <div className={`w-4 h-4 rounded border flex items-center justify-center ${isSpectator ? 'bg-amber-500 border-amber-500' : 'border-white/20'}`}>
+                  {isSpectator && <Play className="w-3 h-3 text-black fill-current" />}
+                </div>
+                <span className="text-[10px] uppercase tracking-widest text-white/60 cursor-pointer select-none">
+                  Spectate
+                </span>
+              </button>
+            </div>
             <button 
               onClick={() => {
+                initAudio();
                 playSound('chips');
                 joinRoom();
               }}
@@ -284,6 +440,7 @@ export default function SabaccGame() {
 
   const me = gameState.players.find(p => p.id === socket?.id);
   const isMyTurn = gameState.players[gameState.turnIndex]?.id === socket?.id;
+  const myDisplayedPlayer = displayedPlayers.find(p => p.id === socket?.id);
 
   return (
     <div className="min-h-screen bg-[#050505] text-white font-sans overflow-hidden flex flex-col">
@@ -410,15 +567,26 @@ export default function SabaccGame() {
                       max="1" 
                       step="0.01" 
                       value={volume} 
-                      onChange={(e) => setVolume(parseFloat(e.target.value))}
+                      onChange={(e) => {
+                        setVolume(parseFloat(e.target.value));
+                      }}
                       className="flex-1 h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-amber-500"
                     />
                   </div>
+                </div>
+
+                <div className="space-y-3 pt-4 border-t border-white/5">
+                  <label className="text-xs uppercase tracking-widest text-white/60">Game Mode</label>
                   <button 
-                    onClick={() => playSound('chips')}
-                    className="w-full py-2 bg-white/5 border border-white/10 rounded text-[10px] uppercase tracking-widest text-white/40 hover:text-white transition-all"
+                    onClick={() => {
+                      playSound('click');
+                      socket?.emit('toggleSpectator', { roomId: gameState.roomId });
+                      setShowSettings(false);
+                    }}
+                    className={`w-full py-3 rounded-xl border transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-[10px] font-bold ${me?.isSpectator ? 'bg-amber-500 text-black border-amber-500' : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'}`}
                   >
-                    Test Sound
+                    {me?.isSpectator ? <Play className="w-3 h-3 fill-current" /> : <Eye className="w-3 h-3" />}
+                    {me?.isSpectator ? 'Join Game' : 'Spectate'}
                   </button>
                 </div>
 
@@ -434,48 +602,139 @@ export default function SabaccGame() {
         )}
       </AnimatePresence>
 
+      {/* All-In Confirmation Modal */}
+      <AnimatePresence>
+        {showAllInConfirm && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              className="bg-zinc-900 border border-red-500/30 rounded-2xl p-6 w-full max-w-xs shadow-2xl text-center"
+            >
+              <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                <AlertCircle className="w-8 h-8 text-red-500" />
+              </div>
+              <h2 className="text-xl font-bold text-white mb-2 uppercase tracking-widest">All In?</h2>
+              <p className="text-white/60 text-sm mb-6">This will bet your entire remaining balance of <span className="text-amber-500 font-bold">{me?.credits} CR</span>. Are you sure?</p>
+              
+              <div className="flex flex-col gap-3">
+                <button 
+                  onClick={() => {
+                    playSound('chips');
+                    betAction('all_in');
+                    setShowAllInConfirm(false);
+                  }}
+                  className="w-full py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl uppercase tracking-widest text-xs transition-all shadow-lg shadow-red-600/20"
+                >
+                  Confirm All In
+                </button>
+                <button 
+                  onClick={() => setShowAllInConfirm(false)}
+                  className="w-full py-3 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-xl transition-all text-xs uppercase tracking-widest"
+                >
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Buy-In Modal */}
+      <AnimatePresence>
+        {showBuyIn && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              className="bg-zinc-900 border border-amber-500/30 rounded-2xl p-6 w-full max-w-sm shadow-2xl"
+            >
+              <h2 className="text-xl font-bold text-amber-500 mb-2 uppercase tracking-widest italic">Request Credits</h2>
+              <p className="text-white/60 text-xs mb-6">Select an amount to buy back into the game. Remember, the house always takes its cut eventually.</p>
+              
+              <div className="grid grid-cols-1 gap-3 mb-6">
+                {[500, 1000, 5000].map(amount => (
+                  <button 
+                    key={amount}
+                    onClick={() => {
+                      playSound('chips');
+                      socket?.emit('addCredits', { roomId: gameState.roomId, amount });
+                      setShowBuyIn(false);
+                    }}
+                    className="group flex items-center justify-between p-4 bg-white/5 border border-white/10 rounded-xl hover:bg-amber-500/10 hover:border-amber-500/50 transition-all"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center group-hover:bg-amber-500/40 transition-colors">
+                        <Coins className="w-5 h-5 text-amber-500" />
+                      </div>
+                      <span className="text-lg font-bold text-white">{amount} CR</span>
+                    </div>
+                    <ArrowRight className="w-5 h-5 text-white/20 group-hover:text-amber-500 transition-colors" />
+                  </button>
+                ))}
+              </div>
+              
+              <button 
+                onClick={() => setShowBuyIn(false)}
+                className="w-full py-3 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-xl transition-all text-xs uppercase tracking-widest"
+              >
+                Maybe Later
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Header */}
-      <header className="p-3 sm:p-4 border-b border-white/5 flex flex-wrap justify-between items-center bg-black/50 backdrop-blur-md gap-2 sm:gap-4 sticky top-0 z-30">
-        <div className="flex items-center gap-2 sm:gap-4">
+      <header className="p-2 sm:p-4 border-b border-white/5 flex justify-between items-center bg-black/50 backdrop-blur-md sticky top-0 z-30">
+        <div className="flex items-center gap-2">
           <button 
             onClick={leaveRoom}
-            className="p-2 hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
+            className="p-1.5 hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
             title="Leave Room"
           >
-            <ChevronLeft className="w-5 h-5 sm:w-6 sm:h-6" />
+            <ChevronLeft className="w-5 h-5" />
           </button>
-          <div className="hidden md:block px-3 py-1 bg-amber-500/10 border border-amber-500/20 rounded text-amber-500 text-[10px] sm:text-xs font-mono">
-            ROOM: {gameState.roomId}
+          <div className="flex flex-col">
+            <span className="text-[8px] uppercase tracking-widest text-white/40">{me?.isSpectator ? 'Spectator' : 'Pilot'}</span>
+            <span className="text-xs sm:text-sm font-mono text-amber-500">{me?.name}</span>
           </div>
-          <div className="px-2 sm:px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded text-blue-400 text-[10px] sm:text-xs font-mono">
-            RD: {gameState.currentRound}/3
-          </div>
-          <button 
-            onClick={() => {
-              setShowRules(true);
-              setIsRulesPinned(false);
-            }}
-            className="p-2 hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
-            title="Rules"
-          >
-            <HelpCircle className="w-4 h-4 sm:w-5 sm:h-5" />
-          </button>
-          <button 
-            onClick={() => setShowSettings(true)}
-            className="p-2 hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
-            title="Settings"
-          >
-            <Settings className="w-4 h-4 sm:w-5 sm:h-5" />
-          </button>
         </div>
-        <div className="flex items-center gap-3 sm:gap-6">
-          <div className="flex flex-col items-end">
-            <span className="text-[8px] sm:text-[10px] uppercase tracking-widest text-white/40">Hand Pot</span>
-            <span className="text-md sm:text-xl font-mono text-amber-500">{gameState.handPot} <span className="text-[10px]">CR</span></span>
+        
+        <div className="flex items-center gap-3">
+          <div className="px-2 py-1 bg-blue-500/10 border border-blue-500/20 rounded text-blue-400 text-[10px] font-mono">
+            RD {gameState.currentRound}/3
           </div>
-          <div className="flex flex-col items-end">
-            <span className="text-[8px] sm:text-[10px] uppercase tracking-widest text-white/40">Sabacc Pot</span>
-            <span className="text-md sm:text-xl font-mono text-red-500">{gameState.sabaccPot} <span className="text-[10px]">CR</span></span>
+          <div className="flex items-center gap-1.5 px-2 py-1 bg-amber-500/20 border border-amber-500/40 rounded-lg shadow-[0_0_10px_rgba(245,158,11,0.2)]">
+            <Coins className="w-3 h-3 text-amber-500" />
+            <span className="text-sm font-mono font-bold text-amber-500">{me?.credits || 0}</span>
+          </div>
+          <div className="flex items-center gap-1 ml-2 border-l border-white/10 pl-2">
+            <button 
+              onClick={() => {
+                setShowRules(true);
+                setIsRulesPinned(false);
+              }}
+              className="p-1.5 hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
+            >
+              <HelpCircle className="w-4 h-4" />
+            </button>
+            <button 
+              onClick={() => setShowSettings(true)}
+              className="p-1.5 hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </header>
@@ -551,53 +810,87 @@ export default function SabaccGame() {
 
       {/* Main Table Area */}
       <main className="flex-1 relative p-4 flex flex-col items-center justify-start overflow-y-auto">
+          {me?.isSpectator && (
+            <div className="w-full max-w-md bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 mb-6 flex items-center justify-between backdrop-blur-sm">
+              <div className="flex items-center gap-3">
+                <Eye className="w-5 h-5 text-amber-500" />
+                <div className="flex flex-col">
+                  <span className="text-xs font-bold text-amber-500 uppercase tracking-widest">Spectator Mode</span>
+                  <span className="text-[10px] text-amber-500/60">You are watching the game</span>
+                </div>
+              </div>
+            <button 
+              onClick={() => {
+                playSound('click');
+                socket?.emit('toggleSpectator', { roomId: gameState.roomId });
+              }}
+              className="px-4 py-2 bg-amber-500 text-black font-bold rounded-lg text-[10px] uppercase tracking-widest hover:bg-amber-600 transition-all"
+            >
+              Join Game
+            </button>
+            </div>
+          )}
+
           {/* Opponents */}
-          <div className="w-full flex justify-center gap-4 flex-wrap mb-8">
-            {gameState.players.filter(p => p.id !== socket?.id).map(p => (
-              <div key={p.id} className={`flex flex-col items-center p-3 rounded-xl border transition-all relative min-w-[120px] ${p.isFolded ? 'opacity-40 grayscale' : 'bg-white/5 border-white/10'}`}>
+          <div className="w-full flex justify-center gap-2 sm:gap-4 flex-wrap mb-4 sm:mb-8">
+            {displayedPlayers.filter(p => p.id !== socket?.id).map(p => (
+              <div key={p.id} className={`flex flex-col items-center p-2 sm:p-3 rounded-xl border transition-all relative min-w-[100px] sm:min-w-[120px] ${p.isFolded ? 'opacity-40 grayscale' : 'bg-white/5 border-white/10'}`}>
+                {/* Dealer Button for Opponents */}
+                {gameState.players[gameState.dealerIndex]?.id === p.id && (
+                  <div className="absolute -top-2 -right-2 w-5 h-5 bg-amber-500 rounded-full border border-black flex items-center justify-center shadow-lg z-10" title="Dealer">
+                    <span className="text-[8px] font-bold text-black">D</span>
+                  </div>
+                )}
                 {gameState.currentPhase === 'JOINING' && p.isAI && (
                   <button 
                     onClick={() => removeAI(p.id)}
-                    className="absolute -top-2 -right-2 bg-red-500 hover:bg-red-600 text-white p-1 rounded-full shadow-lg transition-colors"
+                    className="absolute -top-2 -right-2 bg-red-500 hover:bg-red-600 text-white p-1 rounded-full shadow-lg transition-colors z-10"
                     title="Remove Bot"
                   >
                     <LogOut className="w-3 h-3" />
                   </button>
                 )}
-                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-500 to-amber-700 flex items-center justify-center mb-1 shadow-lg">
-                  <User className="w-5 h-5 text-black" />
+                <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-gradient-to-br from-amber-500 to-amber-700 flex items-center justify-center mb-1 shadow-lg">
+                  <User className="w-4 h-4 sm:w-5 sm:h-5 text-black" />
                 </div>
-                <span className="text-xs font-medium flex items-center gap-1">
+                <span className="text-[10px] sm:text-xs font-medium flex items-center gap-1">
                   {p.name}
-                  {p.isAI && <span className="text-[8px] bg-white/10 px-1 rounded text-white/40">AI</span>}
+                  {p.isAI && <span className="text-[7px] bg-white/10 px-1 rounded text-white/40">AI</span>}
                 </span>
-                <span className="text-[10px] text-amber-500/60 font-mono">{p.credits} CR</span>
+                <span className="text-[8px] sm:text-[10px] text-amber-500/60 font-mono">{p.credits} CR</span>
                 
-                <div className="flex gap-1 mt-2 flex-wrap justify-center">
+                <div className="flex gap-0.5 sm:gap-1 mt-2 flex-wrap justify-center">
                   {p.hand.map((card, i) => (
-                    <div key={i} className={`w-14 h-20 rounded-lg border flex items-center justify-center relative overflow-hidden ${gameState.currentPhase === 'SHOWDOWN' ? 'bg-zinc-800 border-white/20' : 'bg-amber-900/40 border-amber-500/30'}`}>
+                    <motion.div 
+                      key={card.id} 
+                      layoutId={card.id}
+                      initial={{ scale: 0, x: 0, y: -50 }}
+                      animate={{ scale: 1, x: 0, y: 0 }}
+                      transition={{ type: "spring", stiffness: 400, damping: 25, mass: 0.8 }}
+                      className={`w-10 h-14 sm:w-14 sm:h-20 rounded-lg border flex items-center justify-center relative overflow-hidden ${gameState.currentPhase === 'SHOWDOWN' ? 'bg-zinc-800 border-white/20' : 'bg-amber-900/40 border-amber-500/30'}`}
+                    >
                       {gameState.currentPhase === 'SHOWDOWN' ? (
                         <div className="flex flex-col items-center">
-                          <span className={`text-sm font-bold font-mono ${card.type === CardType.POSITIVE ? 'text-blue-400' : card.type === CardType.NEGATIVE ? 'text-red-400' : 'text-amber-400'}`}>
+                          <span className={`text-[10px] sm:text-sm font-bold font-mono ${card.type === CardType.POSITIVE ? 'text-blue-400' : card.type === CardType.NEGATIVE ? 'text-red-400' : 'text-amber-400'}`}>
                             {card.value}
                           </span>
-                          <SuitIcon suit={card.suit} className="w-3 h-3 opacity-40" />
+                          <SuitIcon suit={card.suit} className="w-2 h-2 sm:w-3 sm:h-3 opacity-40" />
                         </div>
                       ) : (
                         <div className="w-full h-full bg-[repeating-linear-gradient(45deg,transparent,transparent_2px,rgba(245,158,11,0.1)_2px,rgba(245,158,11,0.1)_4px)]" />
                       )}
-                    </div>
+                    </motion.div>
                   ))}
                 </div>
 
                 {gameState.currentPhase === 'SHOWDOWN' && !p.isFolded && (
-                  <div className="mt-1 text-[8px] font-mono text-amber-500/80 bg-black/40 px-1.5 py-0.5 rounded border border-amber-500/20 text-center">
+                  <div className="mt-1 text-[7px] sm:text-[8px] font-mono text-amber-500/80 bg-black/40 px-1.5 py-0.5 rounded border border-amber-500/20 text-center">
                     {evaluateHand(p.hand).rankName}
                   </div>
                 )}
 
                 {gameState.currentPhase === 'JOINING' && (
-                  <div className={`mt-1 text-[8px] uppercase tracking-widest ${p.isReady ? 'text-green-500' : 'text-white/20'}`}>
+                  <div className={`mt-1 text-[7px] sm:text-[8px] uppercase tracking-widest ${p.isReady ? 'text-green-500' : 'text-white/20'}`}>
                     {p.isReady ? 'Ready' : 'Waiting'}
                   </div>
                 )}
@@ -606,47 +899,47 @@ export default function SabaccGame() {
           </div>
 
         {/* Center Table */}
-        <div className="w-full max-w-xl aspect-[2/1] sm:aspect-[2.5/1] rounded-[40px] sm:rounded-[60px] border-2 border-white/5 bg-gradient-to-b from-white/5 to-transparent flex flex-col items-center justify-center gap-1 sm:gap-2 relative mb-4 sm:mb-8">
+        <div className="w-full max-w-xl py-6 sm:py-12 sm:aspect-[2.5/1] rounded-[40px] sm:rounded-[60px] border-2 border-white/5 bg-gradient-to-b from-white/5 to-transparent flex flex-col items-center justify-center gap-2 relative mb-4 sm:mb-8">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(245,158,11,0.05)_0%,transparent_70%)]" />
           
           {/* Draw Deck & Discard Pile */}
-          <div className="flex gap-4 sm:gap-8 items-center z-10 scale-75 sm:scale-90">
+          <div className="flex gap-6 sm:gap-8 items-center z-10 scale-90 sm:scale-100">
             {/* Draw Deck */}
             <div className="flex flex-col items-center gap-1">
-              <span className="text-[8px] uppercase tracking-widest text-white/20">Draw</span>
+              <span className="text-[10px] uppercase tracking-widest text-white/20">Draw</span>
               <div className="relative">
-                <div className="w-12 h-16 sm:w-14 sm:h-20 rounded-lg border-2 bg-amber-900/20 border-amber-500/30 shadow-xl flex items-center justify-center overflow-hidden">
+                <div className="w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 bg-amber-900/20 border-amber-500/30 shadow-xl flex items-center justify-center overflow-hidden">
                   <div className="w-full h-full bg-[repeating-linear-gradient(45deg,transparent,transparent_2px,rgba(245,158,11,0.05)_2px,rgba(245,158,11,0.05)_4px)]" />
                 </div>
-                <div className="absolute -top-1 -right-1 w-12 h-16 sm:w-14 sm:h-20 rounded-lg border-2 bg-amber-900/20 border-amber-500/30 -z-10" />
+                <div className="absolute -top-1 -right-1 w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 bg-amber-900/20 border-amber-500/30 -z-10" />
               </div>
             </div>
 
             {/* Central Pots */}
-            <div className="flex flex-col items-center gap-1 sm:gap-2 px-4 sm:px-6 py-2 sm:py-3 bg-black/40 rounded-2xl border border-white/5 backdrop-blur-sm">
+            <div className="flex flex-col items-center gap-2 px-6 py-3 bg-black/40 rounded-2xl border border-white/5 backdrop-blur-sm">
               <div className="flex flex-col items-center">
-                <span className="text-[7px] sm:text-[8px] uppercase tracking-[0.2em] text-white/30">Main Pot</span>
-                <span className="text-md sm:text-lg font-mono text-amber-500 font-bold">{gameState.handPot}</span>
+                <span className="text-[8px] sm:text-[10px] uppercase tracking-[0.2em] text-white/30">Main Pot</span>
+                <span className="text-xl sm:text-2xl font-mono text-amber-500 font-bold">{gameState.handPot}</span>
               </div>
-              <div className="w-6 sm:w-8 h-px bg-white/10" />
+              <div className="w-8 h-px bg-white/10" />
               <div className="flex flex-col items-center">
-                <span className="text-[7px] sm:text-[8px] uppercase tracking-[0.2em] text-white/30">Sabacc Pot</span>
-                <span className="text-sm sm:text-md font-mono text-red-500/80">{gameState.sabaccPot}</span>
+                <span className="text-[8px] sm:text-[10px] uppercase tracking-[0.2em] text-white/30">Sabacc Pot</span>
+                <span className="text-lg sm:text-xl font-mono text-red-500/80">{gameState.sabaccPot}</span>
               </div>
             </div>
 
             {/* Discard Pile */}
             <div className="flex flex-col items-center gap-1">
-              <span className="text-[8px] uppercase tracking-widest text-white/20">Discard</span>
+              <span className="text-[10px] uppercase tracking-widest text-white/20">Discard</span>
               {gameState.discardPile.length > 0 ? (
-                <div className={`w-12 h-16 sm:w-14 sm:h-20 rounded-lg border-2 flex flex-col items-center justify-center relative shadow-xl bg-zinc-900 border-white/20`}>
-                  <span className={`text-lg sm:text-xl font-bold font-mono ${gameState.discardPile[gameState.discardPile.length-1].type === CardType.POSITIVE ? 'text-blue-400' : gameState.discardPile[gameState.discardPile.length-1].type === CardType.NEGATIVE ? 'text-red-400' : 'text-amber-400'}`}>
+                <div className={`w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 flex flex-col items-center justify-center relative shadow-xl bg-zinc-900 border-white/20`}>
+                  <span className={`text-2xl sm:text-3xl font-bold font-mono ${gameState.discardPile[gameState.discardPile.length-1].type === CardType.POSITIVE ? 'text-blue-400' : gameState.discardPile[gameState.discardPile.length-1].type === CardType.NEGATIVE ? 'text-red-400' : 'text-amber-400'}`}>
                     {gameState.discardPile[gameState.discardPile.length-1].value}
                   </span>
                 </div>
               ) : (
-                <div className="w-12 h-16 sm:w-14 sm:h-20 rounded-lg border-2 border-dashed border-white/10 flex items-center justify-center">
-                  <span className="text-[6px] uppercase tracking-widest text-white/10">Empty</span>
+                <div className="w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 border-dashed border-white/10 flex items-center justify-center">
+                  <span className="text-[8px] uppercase tracking-widest text-white/10">Empty</span>
                 </div>
               )}
             </div>
@@ -710,22 +1003,61 @@ export default function SabaccGame() {
 
           {gameState.currentPhase === 'JOINING' && (
             <div className="text-center z-10">
-              <h2 className="text-xl font-bold text-amber-500 mb-2 uppercase tracking-widest italic">Waiting for Players</h2>
+              <h2 className="text-xl font-bold text-amber-500 mb-2 uppercase tracking-widest italic">
+                {me?.isSpectator ? 'Spectating Room' : 'Waiting for Players'}
+              </h2>
               <div className="flex flex-col gap-2">
-                {!me?.isReady ? (
-                  <button 
-                    onClick={setReady}
-                    className="px-6 py-2 bg-amber-500 text-black font-bold rounded-full hover:bg-amber-600 transition-all flex items-center gap-2 mx-auto text-sm"
-                  >
-                    <Play className="w-3 h-3" /> Ready
-                  </button>
-                ) : (
-                  <div className="text-white/60 animate-pulse text-xs">Waiting for others...</div>
+                {!me?.isSpectator && (
+                  !me?.isReady ? (
+                    (me?.credits || 0) < 15 ? (
+                      <div className="flex flex-col gap-3">
+                        <div className="p-3 bg-red-900/20 border border-red-500/30 rounded-xl max-w-[200px] mx-auto">
+                          <p className="text-[10px] text-red-400 uppercase tracking-widest font-bold">Insufficient Credits</p>
+                          <p className="text-[9px] text-white/40 mt-1">You need at least 15 CR to pay the ante.</p>
+                        </div>
+                        <button 
+                          onClick={() => {
+                            playSound('click');
+                            setShowBuyIn(true);
+                          }}
+                          className="px-6 py-2 bg-amber-500 text-black font-bold rounded-full hover:bg-amber-600 transition-all flex items-center gap-2 mx-auto text-sm shadow-lg shadow-amber-500/20"
+                        >
+                          <Coins className="w-4 h-4" /> Request Credits
+                        </button>
+                      </div>
+                    ) : (
+                      <button 
+                        onClick={() => {
+                          playSound('click');
+                          setReady();
+                        }}
+                        className="px-6 py-2 bg-amber-500 text-black font-bold rounded-full hover:bg-amber-600 transition-all flex items-center gap-2 mx-auto text-sm"
+                      >
+                        <Play className="w-3 h-3" /> Ready
+                      </button>
+                    )
+                  ) : (
+                    <div className="text-white/60 animate-pulse text-xs">Waiting for others...</div>
+                  )
                 )}
                 
-                {gameState.players.length < 6 && (
+                <button 
+                  onClick={handleJoinGame}
+                  className="px-4 py-1.5 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all text-[10px] uppercase tracking-widest mx-auto mt-2"
+                >
+                  {me?.isSpectator ? 'Join Game' : 'Sit Out (Spectate)'}
+                </button>
+
+                {me?.isSpectator && (
+                  <div className="text-white/40 text-[10px] uppercase tracking-widest mt-1">You are observing the game</div>
+                )}
+
+                {!me?.isSpectator && gameState.players.length < 6 && (
                   <button 
-                    onClick={addAI}
+                    onClick={() => {
+                      playSound('click');
+                      addAI();
+                    }}
                     className="px-4 py-1.5 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all text-xs flex items-center gap-2 mx-auto"
                   >
                     <User className="w-3 h-3" /> Add AI
@@ -746,11 +1078,32 @@ export default function SabaccGame() {
                 {gameState.players.find(p => p.id === gameState.winnerId)?.hand && 
                   evaluateHand(gameState.players.find(p => p.id === gameState.winnerId)!.hand).rankName}
               </p>
+              {(me?.credits || 0) < 15 && !me?.isSpectator ? (
+                <button 
+                  onClick={() => {
+                    playSound('click');
+                    setShowBuyIn(true);
+                  }}
+                  className="w-full py-3 bg-amber-500 text-black font-bold rounded-xl hover:bg-amber-600 transition-all text-sm uppercase tracking-widest mb-2"
+                >
+                  Request Credits
+                </button>
+              ) : (
+                <button 
+                  onClick={() => {
+                    playSound('click');
+                    setReady();
+                  }}
+                  className="w-full py-3 bg-amber-500 text-black font-bold rounded-xl hover:bg-amber-600 transition-all text-sm uppercase tracking-widest mb-2"
+                >
+                  Next Game
+                </button>
+              )}
               <button 
-                onClick={setReady}
-                className="w-full py-3 bg-amber-500 text-black font-bold rounded-xl hover:bg-amber-600 transition-all text-sm uppercase tracking-widest"
+                onClick={handleJoinGame}
+                className="w-full py-2 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-xl transition-all text-[10px] uppercase tracking-widest"
               >
-                Next Game
+                {me?.isSpectator ? 'Join Next Game' : 'Sit Out (Spectate)'}
               </button>
             </div>
           )}
@@ -758,16 +1111,34 @@ export default function SabaccGame() {
 
         {/* My Hand */}
         <div className="w-full flex flex-col items-center gap-2 sm:gap-4 mb-4 sm:mb-8">
+          {myDisplayedPlayer?.hand.length === 0 && gameState.currentPhase !== 'JOINING' && (
+            <div className="text-amber-500/60 font-mono text-sm animate-pulse my-8">
+              Waiting for next game to start...
+            </div>
+          )}
           <div className="flex gap-1 sm:gap-2 flex-wrap justify-center">
-            <AnimatePresence>
-              {me?.hand.map((card, i) => (
+            <AnimatePresence mode="popLayout">
+              {myDisplayedPlayer?.hand.map((card, i) => (
                 <motion.div
                   key={card.id}
-                  initial={{ y: 20, opacity: 0 }}
-                  animate={{ y: selectedCardId === card.id ? -10 : 0, opacity: 1 }}
-                  transition={{ delay: i * 0.05 }}
+                  layoutId={card.id}
+                  initial={{ y: 100, opacity: 0, rotateY: 90, scale: 0.5 }}
+                  animate={{ 
+                    y: selectedCardId === card.id ? -15 : 0, 
+                    opacity: 1,
+                    rotateY: 0,
+                    scale: selectedCardId === card.id ? 1.05 : 1
+                  }}
+                  exit={{ y: -100, opacity: 0, scale: 0.5 }}
+                  transition={{ 
+                    type: "spring",
+                    stiffness: 400,
+                    damping: 25,
+                    mass: 0.8,
+                    delay: i * 0.03 
+                  }}
                   onClick={() => isMyTurn && gameState.currentPhase === 'CARD' && setSelectedCardId(card.id === selectedCardId ? null : card.id)}
-                  className={`w-12 h-18 sm:w-16 sm:h-24 rounded-lg border-2 flex flex-col items-center justify-center relative shadow-xl cursor-pointer transition-all group ${
+                  className={`w-14 h-20 sm:w-20 sm:h-28 rounded-lg border-2 flex flex-col items-center justify-center relative shadow-xl cursor-pointer transition-all group ${
                     selectedCardId === card.id ? 'ring-2 ring-amber-500 ring-offset-2 ring-offset-black border-amber-500' : ''
                   } ${
                     card.type === CardType.POSITIVE ? 'bg-blue-900/20 border-blue-500/30 text-blue-400 hover:border-blue-400' :
@@ -775,33 +1146,40 @@ export default function SabaccGame() {
                     'bg-amber-900/20 border-amber-500/30 text-amber-400 hover:border-amber-400'
                   }`}
                 >
-                  <div className="absolute top-0.5 left-0.5 flex flex-col items-center gap-0 opacity-40 group-hover:opacity-100 transition-opacity">
-                    <SuitIcon suit={card.suit} className="w-1.5 h-1.5 sm:w-2 sm:h-2" />
-                    <span className="text-[5px] sm:text-[6px] font-mono font-bold leading-none">{card.value}</span>
+                  <div className="absolute top-1 left-1 flex flex-col items-center gap-0 opacity-40 group-hover:opacity-100 transition-opacity">
+                    <SuitIcon suit={card.suit} className="w-2 h-2" />
+                    <span className="text-[6px] sm:text-[8px] font-mono font-bold leading-none">{card.value}</span>
                   </div>
                   
                   <div className="flex flex-col items-center gap-0.5">
-                    <span className="text-md sm:text-xl font-bold font-mono tracking-tighter">{card.value}</span>
-                    <SuitIcon suit={card.suit} className="w-3 h-3 sm:w-4 sm:h-4 opacity-20" />
+                    <span className="text-lg sm:text-2xl font-bold font-mono tracking-tighter">{card.value}</span>
+                    <SuitIcon suit={card.suit} className="w-4 h-4 sm:w-5 sm:h-5 opacity-20" />
                   </div>
 
-                  <div className="absolute bottom-0.5 right-0.5 flex flex-col items-center gap-0 opacity-40 group-hover:opacity-100 transition-opacity rotate-180">
-                    <SuitIcon suit={card.suit} className="w-1.5 h-1.5 sm:w-2 sm:h-2" />
-                    <span className="text-[5px] sm:text-[6px] font-mono font-bold leading-none">{card.value}</span>
+                  <div className="absolute bottom-1 right-1 flex flex-col items-center gap-0 opacity-40 group-hover:opacity-100 transition-opacity rotate-180">
+                    <SuitIcon suit={card.suit} className="w-2 h-2" />
+                    <span className="text-[6px] sm:text-[8px] font-mono font-bold leading-none">{card.value}</span>
                   </div>
+                  
+                  {/* Dealer Button */}
+                  {gameState.players[gameState.dealerIndex]?.id === myDisplayedPlayer?.id && i === 0 && (
+                    <div className="absolute -top-2 -right-2 w-5 h-5 bg-amber-500 rounded-full border border-black flex items-center justify-center shadow-lg z-10" title="Dealer">
+                      <span className="text-[8px] font-bold text-black">D</span>
+                    </div>
+                  )}
                 </motion.div>
               ))}
             </AnimatePresence>
           </div>
-          {me && !me.isFolded && (
-            <div className="px-3 py-1 bg-black/60 border border-white/10 rounded-full text-[9px] sm:text-[10px] font-mono text-white/60 flex gap-3">
+          {myDisplayedPlayer && !myDisplayedPlayer.isFolded && (
+            <div className="px-3 py-1 bg-black/60 border border-white/10 rounded-full text-[10px] font-mono text-white/60 flex gap-3">
               <div>
-                Val: <span className={me.hand.reduce((a, c) => a + c.value, 0) === 0 ? 'text-amber-500 font-bold' : 'text-white'}>
-                  {me.hand.reduce((a, c) => a + c.value, 0)}
+                Val: <span className={myDisplayedPlayer.hand.reduce((a, c) => a + c.value, 0) === 0 ? 'text-amber-500 font-bold' : 'text-white'}>
+                  {myDisplayedPlayer.hand.reduce((a, c) => a + c.value, 0)}
                 </span>
               </div>
               <div className="border-l border-white/10 pl-3 text-amber-500/80">
-                {evaluateHand(me.hand).rankName}
+                {evaluateHand(myDisplayedPlayer.hand).rankName}
               </div>
             </div>
           )}
@@ -812,87 +1190,114 @@ export default function SabaccGame() {
       <footer className="p-4 sm:p-6 border-t border-white/5 bg-black/80 backdrop-blur-xl flex flex-col lg:flex-row gap-4 sm:gap-6 min-h-[16rem] lg:h-64">
         {/* Controls */}
         <div className="flex-1 flex flex-col justify-center gap-3 sm:gap-4">
-          <div className="flex items-center gap-4 mb-1 sm:mb-2">
-            <div className={`w-3 h-3 rounded-full ${isMyTurn ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-            <span className="text-xs sm:text-sm font-medium uppercase tracking-widest">
-              {isMyTurn ? "Your Turn" : `Waiting for ${gameState.players[gameState.turnIndex]?.name}`}
-            </span>
-            {isMyTurn && gameState.currentPhase === 'CARD' && !selectedCardId && (
-              <span className="text-[10px] text-amber-500/60 animate-pulse ml-auto">Select a card to swap</span>
-            )}
-          </div>
+          {me?.isSpectator ? (
+            <div className="flex flex-col items-center justify-center h-full gap-2 opacity-50">
+              <div className="w-12 h-12 rounded-full border-2 border-dashed border-white/20 flex items-center justify-center">
+                <User className="w-6 h-6 text-white/20" />
+              </div>
+              <span className="text-xs uppercase tracking-[0.2em] text-white/40">Spectator Mode</span>
+              <span className="text-[10px] text-white/20 italic">Observe the game logic and player strategies</span>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-4 mb-1 sm:mb-2">
+                <div className={`w-3 h-3 rounded-full ${isMyTurn ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+                <span className={`text-lg sm:text-2xl font-black uppercase tracking-widest ${isMyTurn ? 'text-amber-500 animate-pulse' : 'text-white/40'}`}>
+                  {isMyTurn ? "Your Turn" : `Waiting for ${gameState.players[gameState.turnIndex]?.name}`}
+                </span>
+                {isMyTurn && gameState.currentPhase === 'CARD' && !selectedCardId && (
+                  <span className="text-[10px] text-amber-500/60 animate-pulse ml-auto">Select a card to swap</span>
+                )}
+              </div>
 
-          <div className="flex flex-wrap gap-2 sm:gap-3">
-            {gameState.currentPhase === 'CARD' && isMyTurn && (
-              <>
-                <button onClick={() => cardAction('draw')} className="flex-1 min-w-[100px] py-2 sm:py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs">DRAW DECK</button>
-                <button 
-                  disabled={!selectedCardId}
-                  onClick={() => cardAction('swap_deck', selectedCardId!)} 
-                  className={`flex-1 min-w-[100px] py-2 sm:py-3 bg-purple-600 hover:bg-purple-700 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs ${!selectedCardId ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  SWAP DECK
-                </button>
-                <button 
-                  disabled={!selectedCardId || gameState.discardPile.length === 0}
-                  onClick={() => cardAction('swap_discard', selectedCardId!)} 
-                  className={`flex-1 min-w-[100px] py-2 sm:py-3 bg-indigo-600 hover:bg-indigo-700 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs ${(!selectedCardId || gameState.discardPile.length === 0) ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  SWAP DISCARD
-                </button>
-                <button onClick={() => cardAction('stand')} className="flex-1 min-w-[100px] py-2 sm:py-3 bg-white/10 hover:bg-white/20 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs">STAND</button>
-              </>
-            )}
-
-            {gameState.currentPhase === 'BETTING' && isMyTurn && (
-              <>
-                <div className="flex-1 min-w-[150px] flex flex-col gap-2">
-                  <div className="flex items-center gap-2">
+              <div className="flex flex-wrap gap-2 sm:gap-3">
+                {me?.credits === 0 && (
+                  <div className="w-full flex flex-col items-center gap-2 p-4 bg-red-900/20 border border-red-500/30 rounded-xl">
+                    <span className="text-red-500 font-bold uppercase tracking-widest text-sm">Out of Credits</span>
                     <button 
-                      onClick={() => setBetAmount(prev => Math.max(1, parseInt(prev) - 10).toString())}
-                      className="w-8 h-8 sm:w-10 sm:h-10 bg-white/5 border border-white/10 rounded-lg flex items-center justify-center hover:bg-white/10 transition-colors"
+                      onClick={() => { playSound('click'); setShowBuyIn(true); }}
+                      className="px-6 py-2 bg-amber-500 text-black font-bold rounded-full hover:bg-amber-600 transition-all uppercase tracking-widest text-xs"
                     >
-                      -
-                    </button>
-                    <input 
-                      type="number" 
-                      value={betAmount}
-                      onChange={(e) => setBetAmount(e.target.value)}
-                      className="flex-1 bg-black border border-white/20 rounded-lg py-1 sm:py-2 text-center font-mono text-md sm:text-lg"
-                    />
-                    <button 
-                      onClick={() => setBetAmount(prev => (parseInt(prev) + 10).toString())}
-                      className="w-8 h-8 sm:w-10 sm:h-10 bg-white/5 border border-white/10 rounded-lg flex items-center justify-center hover:bg-white/10 transition-colors"
-                    >
-                      +
+                      Request Credits
                     </button>
                   </div>
-                  <div className="flex gap-2">
-                    {[10, 50, 100].map(val => (
-                      <button 
-                        key={val}
-                        onClick={() => setBetAmount(val.toString())}
-                        className="flex-1 py-1 bg-white/5 border border-white/10 rounded text-[10px] hover:bg-white/10 transition-colors"
-                      >
-                        {val}
+                )}
+
+                {gameState.currentPhase === 'CARD' && isMyTurn && (
+                  <>
+                    <button onClick={() => { playSound('card'); cardAction('draw'); }} className="flex-1 min-w-[80px] py-3 sm:py-4 bg-black/60 border border-amber-500/50 hover:bg-amber-500/20 text-amber-500 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(245,158,11,0.1)]">DRAW</button>
+                    <button 
+                      disabled={!selectedCardId}
+                      onClick={() => { playSound('card'); cardAction('swap_deck', selectedCardId!); }} 
+                      className={`flex-1 min-w-[80px] py-3 sm:py-4 bg-black/60 border border-blue-500/50 hover:bg-blue-500/20 text-blue-400 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(59,130,246,0.1)] ${!selectedCardId ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      SWAP DECK
+                    </button>
+                    <button 
+                      disabled={!selectedCardId || gameState.discardPile.length === 0}
+                      onClick={() => { playSound('card'); cardAction('swap_discard', selectedCardId!); }} 
+                      className={`flex-1 min-w-[80px] py-3 sm:py-4 bg-black/60 border border-purple-500/50 hover:bg-purple-500/20 text-purple-400 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(168,85,247,0.1)] ${(!selectedCardId || gameState.discardPile.length === 0) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      SWAP DISCARD
+                    </button>
+                    <button onClick={() => { playSound('click'); cardAction('stand'); }} className="flex-1 min-w-[80px] py-3 sm:py-4 bg-black/60 border border-white/30 hover:bg-white/10 text-white/80 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs">STAND</button>
+                  </>
+                )}
+
+                {gameState.currentPhase === 'BETTING' && isMyTurn && (
+                  <>
+                    <div className="flex-1 min-w-[120px] flex flex-col gap-2">
+                      <div className="flex items-center gap-1">
+                        <button 
+                          onClick={() => { playSound('click'); setBetAmount(prev => Math.max(1, parseInt(prev) - 10).toString()); }}
+                          className="w-7 h-7 sm:w-10 sm:h-10 bg-white/5 border border-white/10 rounded-lg flex items-center justify-center hover:bg-white/10 transition-colors"
+                        >
+                          -
+                        </button>
+                        <input 
+                          type="number" 
+                          value={betAmount}
+                          onChange={(e) => setBetAmount(e.target.value)}
+                          className="flex-1 bg-black border border-white/20 rounded-lg py-1 text-center font-mono text-sm sm:text-lg w-12"
+                        />
+                        <button 
+                          onClick={() => { playSound('click'); setBetAmount(prev => (parseInt(prev) + 10).toString()); }}
+                          className="w-7 h-7 sm:w-10 sm:h-10 bg-white/5 border border-white/10 rounded-lg flex items-center justify-center hover:bg-white/10 transition-colors"
+                        >
+                          +
+                        </button>
+                      </div>
+                      <div className="flex gap-1">
+                        {[10, 50, 100].map(val => (
+                          <button 
+                            key={val}
+                            onClick={() => { playSound('click'); setBetAmount(prev => (parseInt(prev) + val).toString()); }}
+                            className="flex-1 py-1 bg-white/5 border border-white/10 rounded text-[9px] hover:bg-white/10 transition-colors"
+                          >
+                            +{val}
+                          </button>
+                        ))}
+                      </div>
+                      <button onClick={() => { playSound('chips'); betAction(gameState.currentBet === 0 ? 'bet' : 'raise', betAmount); }} className="w-full py-3 bg-amber-500 text-black hover:bg-amber-400 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_15px_rgba(245,158,11,0.4)]">
+                        {gameState.currentBet === 0 ? 'Bet' : 'Raise'}
                       </button>
-                    ))}
-                  </div>
-                  <button onClick={() => betAction(gameState.currentBet === 0 ? 'bet' : 'raise', betAmount)} className="w-full py-2 sm:py-3 bg-amber-600 hover:bg-amber-700 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs">
-                    {gameState.currentBet === 0 ? 'Bet' : 'Raise'}
-                  </button>
-                </div>
-                <div className="flex-1 flex flex-col gap-2">
-                  {gameState.currentBet > (me?.betThisRound || 0) ? (
-                    <button onClick={() => betAction('call')} className="w-full py-2 sm:py-3 bg-green-600 hover:bg-green-700 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs">CALL ({gameState.currentBet - (me?.betThisRound || 0)})</button>
-                  ) : (
-                    <button onClick={() => betAction('check')} className="w-full py-2 sm:py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs">CHECK</button>
-                  )}
-                  <button onClick={() => betAction('fold')} className="w-full py-2 sm:py-3 bg-red-600 hover:bg-red-700 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs">FOLD</button>
-                </div>
-              </>
-            )}
-          </div>
+                    </div>
+                    <div className="flex-1 flex flex-col gap-2">
+                      {gameState.currentBet > (me?.betThisRound || 0) ? (
+                        <button onClick={() => { playSound('chips'); betAction('call'); }} className="w-full py-3 bg-black/60 border border-green-500/50 hover:bg-green-500/20 text-green-400 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(34,197,94,0.1)]">CALL ({gameState.currentBet - (me?.betThisRound || 0)})</button>
+                      ) : (
+                        <button onClick={() => { playSound('check'); betAction('check'); }} className="w-full py-3 bg-black/60 border border-blue-500/50 hover:bg-blue-500/20 text-blue-400 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(59,130,246,0.1)]">CHECK</button>
+                      )}
+                      <div className="flex gap-2">
+                        <button onClick={() => { playSound('fold'); betAction('fold'); }} className="flex-1 py-3 bg-black/60 border border-red-500/50 hover:bg-red-500/20 text-red-500 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(239,68,68,0.1)]">FOLD</button>
+                        <button onClick={() => { playSound('click'); setShowAllInConfirm(true); }} className="flex-1 py-3 bg-black/60 border border-amber-500/50 hover:bg-amber-500/20 text-amber-500 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(245,158,11,0.1)]">ALL IN</button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Logs & Chat */}
@@ -931,11 +1336,11 @@ export default function SabaccGame() {
         </div>
 
         {/* My Stats */}
-        <div className="hidden sm:flex w-48 flex-col justify-center items-end gap-1">
-          <span className="text-[10px] uppercase tracking-widest text-white/40">Your Credits</span>
-          <span className="text-2xl sm:text-3xl font-mono text-amber-500">{me?.credits}</span>
-          <div className="flex items-center gap-2 text-xs text-white/40">
-            <User className="w-3 h-3" /> {me?.name}
+        <div className="hidden lg:flex w-48 flex-col justify-center items-end gap-1">
+          <span className="text-[10px] uppercase tracking-widest text-white/40">Active Pilot</span>
+          <span className="text-xl font-mono text-amber-500">{me?.name}</span>
+          <div className="flex items-center gap-2 text-[10px] text-white/40 uppercase tracking-widest">
+            <User className="w-3 h-3" /> Status: {me?.isFolded ? 'Folded' : 'In Game'}
           </div>
         </div>
       </footer>

@@ -1,32 +1,53 @@
 # Corellian Spike Sabacc
 
-A multiplayer web-based version of the 'Corellian Spike' Sabacc game.
+[![Docker Pulls](https://img.shields.io/docker/pulls/thenotoriousjeremy/sabacc)](https://hub.docker.com/r/thenotoriousjeremy/sabacc)
+[![GitHub Release](https://img.shields.io/github/v/release/thenotoriousjeremy/corellian-spike-sabacc)](https://github.com/thenotoriousjeremy/corellian-spike-sabacc/releases)
+
+A multiplayer web-based version of the 'Corellian Spike' Sabacc game from Star Wars Legends. Experience the thrill of this classic card game with real-time multiplayer gameplay, featuring Sabacc Shifts, betting phases, and a Star Wars aesthetic.
 
 ## Features
-- **Multiplayer**: Real-time gameplay using Socket.io.
-- **Deck Logic**: 62-card deck (30 positive, 30 negative, 2 Sylops).
-- **Phase Management**: 3 rounds with Card, Betting, and Dice phases.
-- **Credit System**: Track credits, handle antes, and update balances.
-- **Sabacc Shift**: Spike Dice roll at the end of each round can trigger a hand redeal.
-- **Star Wars Aesthetic**: Dark theme with neon accents.
 
-## Deployment
+- **Multiplayer Gameplay**: Real-time multiplayer using Socket.io for seamless interaction.
+- **Authentic Deck**: 62-card deck with 30 positive, 30 negative cards, and 2 Sylops.
+- **Game Phases**: Structured rounds with Card, Betting, and Dice phases.
+- **Credit System**: Manage credits, antes, and pots with automatic balance updates.
+- **Sabacc Shift**: Random Spike Dice rolls can trigger hand redeals for added excitement.
+- **Star Wars Theme**: Dark UI with neon accents inspired by the Star Wars universe.
+- **Cross-Platform**: Runs on any device with a modern web browser.
 
-### Local Development
-```bash
-npm install
-npm run dev  # starts tsx server.ts on http://localhost:3000
-```
+## Screenshots
+
+![Game Screenshot](screenshots/screenshot.PNG)
+
+## Installation
+
+Corellian Spike Sabacc can be installed using Docker, Docker Compose, or manually. Docker is the recommended method for production deployments.
 
 ### Docker
 
-#### Build and run locally
-```bash
-docker build -t sabacc .
-docker run -p 3000:3000 sabacc
-```
+To run the application using Docker:
 
-#### Using Docker Compose (Recommended)
+1. Pull the latest image from GitHub Container Registry:
+   ```bash
+   docker pull ghcr.io/thenotoriousjeremy/sabacc:latest
+   ```
+
+2. Run the container:
+   ```bash
+   docker run -d \
+     --name sabacc \
+     -p 3000:3000 \
+     -e NODE_ENV=production \
+     -e TZ=Etc/UTC \
+     ghcr.io/thenotoriousjeremy/sabacc:latest
+   ```
+
+The application will be available at `http://localhost:3000`.
+
+### Docker Compose
+
+For a more robust setup with automatic restarts and easier management, use Docker Compose. Create a `docker-compose.yml` file with the following content:
+
 ```yaml
 version: '3.8'
 
@@ -42,54 +63,111 @@ services:
     restart: unless-stopped
 ```
 
-**Notes:**
-- The service will be available at `http://localhost:3000`
+Then run:
 
-Start the stack:
 ```bash
 docker-compose up -d
 ```
 
-View logs:
+To view logs:
 ```bash
 docker-compose logs -f sabacc
 ```
 
-Stop the stack:
+To stop:
 ```bash
 docker-compose down
 ```
 
-#### GitHub Container Registry (GHCR)
-This repository automatically builds and pushes Docker images to GHCR on every push to `main`, `master`, or `releases/**` branches.
+### Manual Installation
 
-Pull and run the latest image manually:
-```bash
-docker pull ghcr.io/thenotoriousjeremy/sabacc:latest
-docker run -p 3000:3000 ghcr.io/thenotoriousjeremy/sabacc:latest
-```
+If you prefer to run the application directly on your system:
 
-### Railway / Render / DigitalOcean
-1. **Environment Variables**:
-   - `NODE_ENV=production`
-   - `PORT=3000`
-2. **Build Command**: `npm run build`
-3. **Start Command**: `npm start` (runs `tsx server.ts`)
+1. **Prerequisites**:
+   - Node.js 18+ and npm
+   - Git
+
+2. Clone the repository:
+   ```bash
+   git clone https://github.com/thenotoriousjeremy/corellian-spike-sabacc.git
+   cd corellian-spike-sabacc
+   ```
+
+3. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+4. For development:
+   ```bash
+   npm run dev
+   ```
+
+5. For production:
+   ```bash
+   npm run build
+   npm start
+   ```
+
+The application will start on `http://localhost:3000`.
+
+## Configuration
+
+The application uses the following environment variables:
+
+- `NODE_ENV`: Set to `production` for production builds
+- `PORT`: Port to run the server on (default: 3000)
+- `TZ`: Timezone (default: Etc/UTC)
+
+## Usage
+
+1. Open your web browser and navigate to `http://localhost:3000`.
+2. Enter your player name and a room ID.
+3. Set your starting credits.
+4. Wait for other players to join and mark themselves as ready.
+5. Play through the three phases of each round:
+   - **Card Phase**: Draw, swap, or stand.
+   - **Betting Phase**: Call, raise, or fold.
+   - **Dice Phase**: Watch for the Sabacc Shift!
 
 ## Game Rules
 
-This implementation follows the **Corellian Spike variant** of Sabacc from Star Wars Legends.
+This implementation follows the **Corellian Spike variant** of Sabacc.
 
-### Hand Rankings (highest to lowest)
-1. **Pure Sabacc** - Two Sylops (value 0) = Automatic win
-2. **Squadron** - Four cards of same value = Best non-Sabacc hand
-3. **Gee Whiz** - Five cards totaling 23
-4. **Full House** - Three of a kind + pair
-5. **Flush** - Five cards of the same suit
-6. **Straight** - Five cards in sequence
-7. **Three of a Kind**
-8. **Pair**
-9. **Nulrhek** - Any other hand; closest to 0 wins
+### Winning the Game – Hand Hierarchy
+
+Specialty hands – All hands must equal zero and lower integer wins a tie
+
+- **Pure Sabacc** (2 Sylops)
+- **Full Sabacc** (+10, +10, -10, -10, Sylop)
+- **Fleet** (4 of a kind, Sylop): e.g. -5, -5, +5, +5, Sylop or -2, -2, +2, +2, Sylop.
+- **Yee-Haa** (1 pair, Sylop ): e.g. +4, -4, Sylop or +2, +2, -4, Sylop.
+- **Rhylet** (3 of a kind, 1 pair): e.g. +2, +2, +2, -3, -3 or +4, +4, +4, -6, -6.
+- **Squadron** (4 of a kind): e.g. -6, -6, +6, +6 or -1, -1, +1, +1.
+- **Gee Whiz** (+1, +2, +3, +4, -10 or -1, -2, -3, -4, +10)
+- **Straight Khyron** (Run of 4 cards): e.g. +7, -8, -9, +10 or -2, +3, +4, -5.
+- **Banthas Wild** (3 of a kind): e.g. +4, +4, +4, -3, -9 or +5, +5, -5, -3, -2.
+- **Rule of Two** (2 pairs): e.g. -9, +9, -4, +4 or +3, +3, +5, -5, -6.
+- **Sabacc** (1 pair): e.g. +5,-5 or +3, +3, -6.
+
+Non-specialty hands that also equal zero
+
+- **Most Cards**: The hand with the highest number of cards wins.
+- **Highest Positive Sum**: Add all positive numbers in each hand, the hand with the highest sum wins.
+- **Highest Single Positive Value**: The hand with the single highest positive card.
+
+When hands do not equal zero (Nulrhek)
+
+- **Closest to zero**: The hand closest to zero wins
+- **Positive score**: Positive beats negative (+3 beats -3)
+- **Most Cards**: The hand with the most cards wins
+- **Highest Positive Sum**: Add all positive numbers in each hand, the hand with the highest sum wins.
+- **Highest Single Positive Value**: The hand with the single highest positive card.
+
+True Tie
+
+- **Single Blind Draw**: If all of the above scenarios also end in a tie each remaining play draws 1 card. The player closest to zero wins the hand. Positive numbers always beat negative numbers. If players still tie, keep doing the blind draw until a winner is decided.
+  - **Card Suit Ranking**: If you want to avoid the luck of the draw, you can alternatively look at the card suit of the single highest positive card. Circle > Triangle > Square
 
 ### Deck Composition
 - 30 positive cards (values 1-15, 2 of each suit)
@@ -109,12 +187,20 @@ This implementation follows the **Corellian Spike variant** of Sabacc from Star 
 
 For more details, see [How to Play - Sabacc](https://hyperspaceprops.com/how-to-play-corellian-spike/).
 
-## How to Play
-1. Enter your name and a Room ID.
-2. Set your starting credits.
-3. Wait for at least one other player to join and set "Ready".
-4. Follow the phases:
-   - **Card Phase**: Draw, Swap, or Stand.
-   - **Betting Phase**: Call, Raise, or Fold.
-   - **Dice Phase**: Watch the Spike Dice roll!
-5. After 3 rounds, the winner is determined by the hand hierarchy.
+## Contributing
+
+Contributions are welcome! Please fork the repository and submit a pull request.
+
+1. Fork the project
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Support
+
+If you have any questions or issues, please open an issue on GitHub.

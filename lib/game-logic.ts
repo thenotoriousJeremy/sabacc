@@ -27,6 +27,7 @@ export interface Player {
   isReady: boolean;
   betThisRound: number;
   isAI?: boolean;
+  isSpectator?: boolean;
 }
 
 export interface ChatMessage {
