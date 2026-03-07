@@ -19,9 +19,10 @@ WORKDIR /app
 # copy built output
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/package-lock.json ./package-lock.json
 
-# install only production dependencies (omit tsx, typescript, etc.)
-RUN npm ci --only=production
+# install all dependencies (tsx is needed at runtime)
+RUN npm ci
 
 # copy any other runtime files (e.g. server.ts compiled if you precompile)
 # since we are using tsx to run the server, we still need it and tsx, so
