@@ -16,6 +16,7 @@ import {
   Info,
   ChevronLeft,
   Trophy,
+  X,
   Circle as CircleIcon,
   Square as SquareIcon,
   Triangle as TriangleIcon,
@@ -25,7 +26,8 @@ import {
   VolumeX,
   Eye,
   Pin,
-  PinOff
+  PinOff,
+  Lock
 } from 'lucide-react';
 import { GameState, Player, Card, CardType, evaluateHand, CardSuit } from '@/lib/game-logic';
 
@@ -43,18 +45,21 @@ export default function SabaccGame() {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [playerName, setPlayerName] = useState('');
   const [roomId, setRoomId] = useState('');
-  const [startingCredits, setStartingCredits] = useState('1000');
   const [isSpectator, setIsSpectator] = useState(false);
   const [isJoined, setIsJoined] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [isRulesPinned, setIsRulesPinned] = useState(false);
   const [betAmount, setBetAmount] = useState('10');
   const [volume, setVolume] = useState(0.8);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [chatMessage, setChatMessage] = useState('');
   const [isRollingDice, setIsRollingDice] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAllInConfirm, setShowAllInConfirm] = useState(false);
   const [showBuyIn, setShowBuyIn] = useState(false);
+  const [buyInAmount, setBuyInAmount] = useState<number>(1000);
+  const [isEditingCredits, setIsEditingCredits] = useState(false);
+  const [newCreditsAmount, setNewCreditsAmount] = useState(0);
 
   // Web Audio Context for synthesized sounds
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -74,7 +79,7 @@ export default function SabaccGame() {
   }, [volume]);
 
   // Sound effects synthesizer
-  const playSound = React.useCallback((type: 'card' | 'chips' | 'dice' | 'win' | 'fold' | 'click' | 'check') => {
+  const playSound = React.useCallback((type: 'card' | 'chips' | 'dice' | 'win' | 'fold' | 'click' | 'check' | 'sabacc_shift' | 'no_shift') => {
     if (!audioCtxRef.current) return;
     
     const ctx = audioCtxRef.current;
@@ -213,6 +218,33 @@ export default function SabaccGame() {
         osc.stop(now + 0.2);
         break;
       }
+      case 'sabacc_shift': {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(200, now);
+        osc.frequency.exponentialRampToValueAtTime(50, now + 1);
+        gain.gain.setValueAtTime(0.5, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 1);
+        osc.connect(gain);
+        gain.connect(masterGain);
+        osc.start();
+        osc.stop(now + 1);
+        break;
+      }
+      case 'no_shift': {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(400, now);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+        osc.connect(gain);
+        gain.connect(masterGain);
+        osc.start();
+        osc.stop(now + 0.1);
+        break;
+      }
     }
   }, []);
 
@@ -226,16 +258,14 @@ export default function SabaccGame() {
 
   const playerNameRef = useRef(playerName);
   const roomIdRef = useRef(roomId);
-  const startingCreditsRef = useRef(startingCredits);
 
   const isSpectatorRef = useRef(isSpectator);
 
   useEffect(() => {
     playerNameRef.current = playerName;
     roomIdRef.current = roomId;
-    startingCreditsRef.current = startingCredits;
     isSpectatorRef.current = isSpectator;
-  }, [playerName, roomId, startingCredits, isSpectator]);
+  }, [playerName, roomId, isSpectator]);
 
   const socketRef = useRef<Socket | null>(null);
 
@@ -261,7 +291,6 @@ export default function SabaccGame() {
       newSocket.emit('joinRoom', { 
         roomId: roomIdRef.current, 
         playerName: playerNameRef.current, 
-        startingCredits: startingCreditsRef.current,
         isSpectator: isSpectatorRef.current
       });
     });
@@ -274,7 +303,16 @@ export default function SabaccGame() {
             if (state.currentPhase === 'DICE') {
               playSound('dice');
               setIsRollingDice(true);
-              setTimeout(() => setIsRollingDice(false), 2000);
+              setTimeout(() => {
+                setIsRollingDice(false);
+                if (state.lastDiceRoll) {
+                  if (state.lastDiceRoll[0] === state.lastDiceRoll[1]) {
+                    playSound('sabacc_shift');
+                  } else {
+                    playSound('no_shift');
+                  }
+                }
+              }, 2000);
             }
             if (state.currentPhase === 'SHOWDOWN') playSound('win');
           }
@@ -289,6 +327,16 @@ export default function SabaccGame() {
       });
     });
 
+    newSocket.on('error', (msg: string) => {
+      setErrorMessage(msg);
+      setTimeout(() => setErrorMessage(null), 5000);
+    });
+
+    newSocket.on('connect_error', () => {
+      setErrorMessage("Connection error. Retrying...");
+      setTimeout(() => setErrorMessage(null), 5000);
+    });
+
     return () => {
       newSocket.disconnect();
       socketRef.current = null;
@@ -301,8 +349,15 @@ export default function SabaccGame() {
 
   const joinRoom = () => {
     if (!playerName || !roomId) return;
-    socket?.emit('joinRoom', { roomId, playerName, startingCredits, isSpectator });
+    socket?.emit('joinRoom', { roomId, playerName, isSpectator });
     setIsJoined(true);
+  };
+
+  const handleUpdateCredits = () => {
+    if (socket && newCreditsAmount >= 0) {
+      socket.emit('updateCredits', { roomId, credits: newCreditsAmount });
+    }
+    setIsEditingCredits(false);
   };
 
   const setReady = () => {
@@ -356,6 +411,26 @@ export default function SabaccGame() {
     setChatMessage('');
   };
 
+  const getOpponentStyle = (index: number, total: number) => {
+    let angle = Math.PI / 2;
+    if (total > 1) {
+      const startAngle = Math.PI * 0.95;
+      const endAngle = Math.PI * 0.05;
+      angle = startAngle - (index * ((startAngle - endAngle) / (total - 1)));
+    }
+    const rx = 45;
+    const ry = 42;
+    const x = 50 + rx * Math.cos(angle);
+    const y = 50 - ry * Math.sin(angle);
+    return {
+      left: `${x}%`,
+      top: `${y}%`,
+      transform: 'translate(-50%, -50%)',
+      position: 'absolute' as const,
+      zIndex: 10,
+    };
+  };
+
   if (!isJoined) {
     return (
       <div className="min-h-screen bg-[#0a0a0a] text-white flex items-center justify-center p-4 font-sans">
@@ -365,7 +440,7 @@ export default function SabaccGame() {
           </h1>
           <div className="space-y-6">
             <div>
-              <label className="block text-xs uppercase tracking-widest text-amber-500/60 mb-2">Pilot Name</label>
+              <label className="block text-xs uppercase tracking-widest text-amber-500/60 mb-2">User Name</label>
               <div className="relative">
                 <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-amber-500/40" />
                 <input 
@@ -387,20 +462,6 @@ export default function SabaccGame() {
                   onChange={(e) => setRoomId(e.target.value)}
                   className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 focus:outline-none focus:border-amber-500 transition-colors"
                   placeholder="CORELLIA-1"
-                />
-              </div>
-            </div>
-            <div>
-              <label className="block text-xs uppercase tracking-widest text-amber-500/60 mb-2">Buy-in Amount (Credits)</label>
-              <div className="relative">
-                <Coins className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-amber-500/40" />
-                <input 
-                  type="number" 
-                  value={startingCredits}
-                  onChange={(e) => setStartingCredits(e.target.value)}
-                  className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 focus:outline-none focus:border-amber-500 transition-colors"
-                  min="100"
-                  max="10000"
                 />
               </div>
             </div>
@@ -510,18 +571,19 @@ export default function SabaccGame() {
                 <section>
                   <h3 className="text-white font-bold mb-2 uppercase text-xs tracking-widest">Hand Rankings (Highest to Lowest)</h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 font-mono text-[11px]">
-                    <div className="p-2 bg-white/5 rounded border border-white/5"><span className="text-amber-500">Pure Sabacc:</span> 0 with 2 Sylops</div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5"><span className="text-amber-500">Full Sabacc:</span> 0 with 1 Sylop + 4 of a kind (10s)</div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5"><span className="text-amber-500">Fleet:</span> 0 with 1 Sylop + 4 of a kind</div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5"><span className="text-amber-500">Yee-Haa:</span> 0 with 1 Sylop + 1 pair</div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5"><span className="text-amber-500">Rhylet:</span> 0 with 3 of a kind + 1 pair</div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5"><span className="text-amber-500">Squadron:</span> 0 with 4 of a kind</div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5"><span className="text-amber-500">Gee Whiz:</span> 0 with 1,2,3,4 and -10 (or -1,-2,-3,-4 and 10)</div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5"><span className="text-amber-500">Straight Khyron:</span> 0 with run of 4</div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5"><span className="text-amber-500">Banthas Wild:</span> 0 with 3 of a kind</div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5"><span className="text-amber-500">Rule of Two:</span> 0 with 2 pairs</div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5"><span className="text-amber-500">Sabacc:</span> 0 with 1 pair or just sum 0</div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5"><span className="text-white/40">Nulrhek:</span> Any hand not totaling 0. Closest to 0 wins.</div>
+                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Pure Sabacc:</span> 0 with 2 Sylops</span><span className="text-white/40 text-[9px]">&lt; 0.1%</span></div>
+                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Full Sabacc:</span> 0 with 1 Sylop + 4 of a kind (10s)</span><span className="text-white/40 text-[9px]">~0.1%</span></div>
+                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Fleet:</span> 0 with 1 Sylop + 4 of a kind</span><span className="text-white/40 text-[9px]">~0.2%</span></div>
+                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Yee-Haa:</span> 0 with 1 Sylop + 1 pair</span><span className="text-white/40 text-[9px]">~0.5%</span></div>
+                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Rhylet:</span> 0 with 3 of a kind + 1 pair</span><span className="text-white/40 text-[9px]">~1%</span></div>
+                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Squadron:</span> 0 with 4 of a kind</span><span className="text-white/40 text-[9px]">~2%</span></div>
+                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Gee Whiz:</span> 0 with 1,2,3,4 and -10</span><span className="text-white/40 text-[9px]">~3%</span></div>
+                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Straight Khyron:</span> 0 with run of 4</span><span className="text-white/40 text-[9px]">~4%</span></div>
+                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Banthas Wild:</span> 0 with 3 of a kind</span><span className="text-white/40 text-[9px]">~6%</span></div>
+                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Rule of Two:</span> 0 with 2 pairs</span><span className="text-white/40 text-[9px]">~8%</span></div>
+                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Sabacc (Pair):</span> 0 with 1 pair</span><span className="text-white/40 text-[9px]">~10%</span></div>
+                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Sabacc:</span> just sum 0</span><span className="text-white/40 text-[9px]">~10%</span></div>
+                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-white/40">Nulrhek:</span> Any hand not totaling 0.</span><span className="text-white/40 text-[9px]">~55%</span></div>
                   </div>
                 </section>
               </div>
@@ -530,8 +592,52 @@ export default function SabaccGame() {
                 onClick={() => setShowRules(false)}
                 className="w-full mt-8 py-4 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl transition-all uppercase tracking-widest"
               >
-                Got it, Pilot
+                Got it, User
               </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Edit Credits Modal */}
+      <AnimatePresence>
+        {isEditingCredits && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
+          >
+            <motion.div 
+              initial={{ scale: 0.9 }}
+              animate={{ scale: 1 }}
+              className="bg-zinc-900 border border-amber-500/30 rounded-2xl p-6 w-full max-w-xs shadow-2xl"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-xl font-bold text-amber-500 uppercase tracking-widest">Edit Credits</h2>
+                <button onClick={() => setIsEditingCredits(false)} className="text-white/40 hover:text-white">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs uppercase tracking-widest text-amber-500/60 mb-2">New Amount</label>
+                  <input 
+                    type="number" 
+                    value={newCreditsAmount}
+                    onChange={(e) => setNewCreditsAmount(parseInt(e.target.value) || 0)}
+                    className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 px-4 focus:outline-none focus:border-amber-500 transition-colors font-mono text-lg"
+                    min="0"
+                  />
+                </div>
+                <button 
+                  onClick={handleUpdateCredits}
+                  className="w-full py-3 bg-amber-500 text-black font-bold rounded-xl hover:bg-amber-600 transition-all uppercase tracking-widest"
+                >
+                  Update Credits
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}
@@ -662,26 +768,25 @@ export default function SabaccGame() {
               <h2 className="text-xl font-bold text-amber-500 mb-2 uppercase tracking-widest italic">Request Credits</h2>
               <p className="text-white/60 text-xs mb-6">Select an amount to buy back into the game. Remember, the house always takes its cut eventually.</p>
               
-              <div className="grid grid-cols-1 gap-3 mb-6">
-                {[500, 1000, 5000].map(amount => (
-                  <button 
-                    key={amount}
-                    onClick={() => {
-                      playSound('chips');
-                      socket?.emit('addCredits', { roomId: gameState.roomId, amount });
-                      setShowBuyIn(false);
-                    }}
-                    className="group flex items-center justify-between p-4 bg-white/5 border border-white/10 rounded-xl hover:bg-amber-500/10 hover:border-amber-500/50 transition-all"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center group-hover:bg-amber-500/40 transition-colors">
-                        <Coins className="w-5 h-5 text-amber-500" />
-                      </div>
-                      <span className="text-lg font-bold text-white">{amount} CR</span>
-                    </div>
-                    <ArrowRight className="w-5 h-5 text-white/20 group-hover:text-amber-500 transition-colors" />
-                  </button>
-                ))}
+              <div className="flex flex-col gap-3 mb-6">
+                <input 
+                  type="number" 
+                  value={buyInAmount}
+                  onChange={(e) => setBuyInAmount(Number(e.target.value))}
+                  className="w-full bg-black/50 border border-amber-500/30 rounded-xl p-3 text-white text-center text-xl"
+                  min="100"
+                  step="100"
+                />
+                <button 
+                  onClick={() => {
+                    playSound('chips');
+                    socket?.emit('addCredits', { roomId: gameState.roomId, amount: buyInAmount });
+                    setShowBuyIn(false);
+                  }}
+                  className="w-full py-3 bg-amber-500 text-black font-bold rounded-xl hover:bg-amber-600 transition-all uppercase tracking-widest text-sm"
+                >
+                  Buy In
+                </button>
               </div>
               
               <button 
@@ -696,6 +801,20 @@ export default function SabaccGame() {
       </AnimatePresence>
 
       {/* Header */}
+      <AnimatePresence>
+        {errorMessage && (
+          <motion.div 
+            initial={{ opacity: 0, y: -50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -50 }}
+            className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] bg-red-600 text-white px-6 py-3 rounded-full shadow-2xl font-bold text-sm tracking-widest uppercase flex items-center gap-2"
+          >
+            <AlertCircle className="w-5 h-5" />
+            {errorMessage}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <header className="p-2 sm:p-4 border-b border-white/5 flex justify-between items-center bg-black/50 backdrop-blur-md sticky top-0 z-30">
         <div className="flex items-center gap-2">
           <button 
@@ -706,20 +825,35 @@ export default function SabaccGame() {
             <ChevronLeft className="w-5 h-5" />
           </button>
           <div className="flex flex-col">
-            <span className="text-[8px] uppercase tracking-widest text-white/40">{me?.isSpectator ? 'Spectator' : 'Pilot'}</span>
+            <span className="text-[8px] uppercase tracking-widest text-white/40">{me?.isSpectator ? 'Spectator' : 'User'}</span>
             <span className="text-xs sm:text-sm font-mono text-amber-500">{me?.name}</span>
           </div>
         </div>
         
-        <div className="flex items-center gap-3">
-          <div className="px-2 py-1 bg-blue-500/10 border border-blue-500/20 rounded text-blue-400 text-[10px] font-mono">
-            RD {gameState.currentRound}/3
+        <div className="flex items-center gap-3 sm:gap-5">
+          <div className="flex flex-col items-end">
+            <span className="text-[8px] sm:text-[10px] uppercase tracking-widest text-white/40">Game</span>
+            <span className="text-sm sm:text-lg font-mono font-bold text-white/80">{gameState.gamesPlayed + 1}</span>
           </div>
-          <div className="flex items-center gap-1.5 px-2 py-1 bg-amber-500/20 border border-amber-500/40 rounded-lg shadow-[0_0_10px_rgba(245,158,11,0.2)]">
-            <Coins className="w-3 h-3 text-amber-500" />
-            <span className="text-sm font-mono font-bold text-amber-500">{me?.credits || 0}</span>
+          <div className="flex flex-col items-end">
+            <span className="text-[8px] sm:text-[10px] uppercase tracking-widest text-white/40">Round</span>
+            <span className="text-sm sm:text-lg font-mono font-bold text-blue-400">{gameState.currentRound}/3</span>
           </div>
-          <div className="flex items-center gap-1 ml-2 border-l border-white/10 pl-2">
+          <div 
+            className={`flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/20 border border-amber-500/40 rounded-xl shadow-[0_0_15px_rgba(245,158,11,0.2)] transition-colors ${(gameState.currentPhase === 'JOINING' || gameState.currentPhase === 'SHOWDOWN') ? 'cursor-pointer hover:bg-amber-500/30' : ''}`}
+            onClick={() => {
+              if (gameState.currentPhase === 'JOINING' || gameState.currentPhase === 'SHOWDOWN') {
+                playSound('click');
+                setNewCreditsAmount(me?.credits || 0);
+                setIsEditingCredits(true);
+              }
+            }}
+            title={(gameState.currentPhase === 'JOINING' || gameState.currentPhase === 'SHOWDOWN') ? "Edit Credits" : "Credits"}
+          >
+            <Coins className="w-4 h-4 sm:w-5 sm:h-5 text-amber-500" />
+            <span className="text-lg sm:text-xl font-mono font-bold text-amber-500">{me?.credits || 0}</span>
+          </div>
+          <div className="flex items-center gap-1 ml-1 sm:ml-2 border-l border-white/10 pl-2 sm:pl-3">
             <button 
               onClick={() => {
                 setShowRules(true);
@@ -766,17 +900,19 @@ export default function SabaccGame() {
               <section>
                 <h4 className="text-white font-bold mb-1 uppercase tracking-widest">Hand Rankings</h4>
                 <ul className="space-y-1">
-                  <li className="text-amber-500/80">Pure Sabacc: 2 Sylops (0)</li>
-                  <li>Full Sabacc: 1 Sylop + 4x10s</li>
-                  <li>Fleet: 1 Sylop + 4 of a kind</li>
-                  <li>Yee-Haa: 1 Sylop + 1 pair</li>
-                  <li>Rhylet: 3 of a kind + 1 pair</li>
-                  <li>Squadron: 4 of a kind</li>
-                  <li>Gee Whiz: 1,2,3,4, -10</li>
-                  <li>Straight Khyron: Run of 4</li>
-                  <li>Banthas Wild: 3 of a kind</li>
-                  <li>Rule of Two: 2 pairs</li>
-                  <li>Sabacc: Sum 0</li>
+                  <li className="flex justify-between"><span className="text-amber-500/80">Pure Sabacc: 2 Sylops</span> <span className="text-white/40">&lt;0.1%</span></li>
+                  <li className="flex justify-between"><span>Full Sabacc: 1 Sylop + 4x10s</span> <span className="text-white/40">~0.1%</span></li>
+                  <li className="flex justify-between"><span>Fleet: 1 Sylop + 4 of a kind</span> <span className="text-white/40">~0.2%</span></li>
+                  <li className="flex justify-between"><span>Yee-Haa: 1 Sylop + 1 pair</span> <span className="text-white/40">~0.5%</span></li>
+                  <li className="flex justify-between"><span>Rhylet: 3 of a kind + 1 pair</span> <span className="text-white/40">~1%</span></li>
+                  <li className="flex justify-between"><span>Squadron: 4 of a kind</span> <span className="text-white/40">~2%</span></li>
+                  <li className="flex justify-between"><span>Gee Whiz: 1,2,3,4, -10</span> <span className="text-white/40">~3%</span></li>
+                  <li className="flex justify-between"><span>Straight Khyron: Run of 4</span> <span className="text-white/40">~4%</span></li>
+                  <li className="flex justify-between"><span>Banthas Wild: 3 of a kind</span> <span className="text-white/40">~6%</span></li>
+                  <li className="flex justify-between"><span>Rule of Two: 2 pairs</span> <span className="text-white/40">~8%</span></li>
+                  <li className="flex justify-between"><span>Sabacc (Pair): 1 pair</span> <span className="text-white/40">~10%</span></li>
+                  <li className="flex justify-between"><span>Sabacc: Sum 0</span> <span className="text-white/40">~10%</span></li>
+                  <li className="flex justify-between"><span>Nulrhek: Not 0</span> <span className="text-white/40">~55%</span></li>
                 </ul>
               </section>
               <section>
@@ -801,7 +937,7 @@ export default function SabaccGame() {
               <section>
                 <h4 className="text-white font-bold mb-1 uppercase tracking-widest">The Pots</h4>
                 <p><span className="text-amber-500">Hand Pot:</span> Won by the best hand.</p>
-                <p><span className="text-red-500">Sabacc Pot:</span> Won only by a hand totaling 0.</p>
+                <p><span className="text-red-500">Sabacc Pot:</span> Won only by a specialty hand totaling 0 (Sabacc Pair or better).</p>
               </section>
             </div>
           </motion.div>
@@ -809,9 +945,9 @@ export default function SabaccGame() {
       </AnimatePresence>
 
       {/* Main Table Area */}
-      <main className="flex-1 relative p-4 flex flex-col items-center justify-start overflow-y-auto">
+      <main className="flex-1 relative p-2 sm:p-4 flex flex-col items-center justify-center overflow-hidden min-h-[500px]">
           {me?.isSpectator && (
-            <div className="w-full max-w-md bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 mb-6 flex items-center justify-between backdrop-blur-sm">
+            <div className="absolute top-4 z-50 w-full max-w-md bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex items-center justify-between backdrop-blur-sm">
               <div className="flex items-center gap-3">
                 <Eye className="w-5 h-5 text-amber-500" />
                 <div className="flex flex-col">
@@ -831,119 +967,124 @@ export default function SabaccGame() {
             </div>
           )}
 
+        <div className="relative w-full max-w-5xl flex-1 flex items-center justify-center mt-8 sm:mt-12">
           {/* Opponents */}
-          <div className="w-full flex justify-center gap-2 sm:gap-4 flex-wrap mb-4 sm:mb-8">
-            {displayedPlayers.filter(p => p.id !== socket?.id).map(p => (
-              <div key={p.id} className={`flex flex-col items-center p-2 sm:p-3 rounded-xl border transition-all relative min-w-[100px] sm:min-w-[120px] ${p.isFolded ? 'opacity-40 grayscale' : 'bg-white/5 border-white/10'}`}>
-                {/* Dealer Button for Opponents */}
-                {gameState.players[gameState.dealerIndex]?.id === p.id && (
-                  <div className="absolute -top-2 -right-2 w-5 h-5 bg-amber-500 rounded-full border border-black flex items-center justify-center shadow-lg z-10" title="Dealer">
-                    <span className="text-[8px] font-bold text-black">D</span>
-                  </div>
-                )}
-                {gameState.currentPhase === 'JOINING' && p.isAI && (
-                  <button 
-                    onClick={() => removeAI(p.id)}
-                    className="absolute -top-2 -right-2 bg-red-500 hover:bg-red-600 text-white p-1 rounded-full shadow-lg transition-colors z-10"
-                    title="Remove Bot"
+          {displayedPlayers.filter(p => p.id !== socket?.id).map((p, i, arr) => (
+            <div 
+              key={p.id} 
+              style={getOpponentStyle(i, arr.length)}
+              className={`flex flex-col items-center p-2 sm:p-3 rounded-xl border transition-all min-w-[90px] sm:min-w-[120px] z-10 ${p.isFolded ? 'opacity-40 grayscale' : 'bg-black/60 backdrop-blur-md border-white/10 shadow-xl'}`}
+            >
+              {/* Dealer Button for Opponents */}
+              {gameState.players[gameState.dealerIndex]?.id === p.id && (
+                <div className="absolute -top-2 -right-2 w-5 h-5 bg-amber-500 rounded-full border border-black flex items-center justify-center shadow-lg z-10" title="Dealer">
+                  <span className="text-[8px] font-bold text-black">D</span>
+                </div>
+              )}
+              {gameState.currentPhase === 'JOINING' && p.isAI && (
+                <button 
+                  onClick={() => removeAI(p.id)}
+                  className="absolute -top-2 -left-2 bg-red-500 hover:bg-red-600 text-white p-1 rounded-full shadow-lg transition-colors z-10"
+                  title="Remove Bot"
+                >
+                  <LogOut className="w-3 h-3" />
+                </button>
+              )}
+              <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-gradient-to-br from-amber-500 to-amber-700 flex items-center justify-center mb-1 shadow-lg">
+                <User className="w-4 h-4 sm:w-5 sm:h-5 text-black" />
+              </div>
+              <span className="text-[10px] sm:text-xs font-medium flex items-center gap-1">
+                {p.name}
+                {p.isAI && <span className="text-[7px] bg-white/10 px-1 rounded text-white/40">AI</span>}
+              </span>
+              <span className="text-[8px] sm:text-[10px] text-amber-500/60 font-mono">{p.credits} CR</span>
+              
+              <div className="flex gap-1 sm:gap-2 mt-2 justify-center">
+                {p.hand.map((card, i) => (
+                  <motion.div 
+                    key={card.id} 
+                    layoutId={card.id}
+                    initial={{ scale: 0, x: 0, y: -50 }}
+                    animate={{ scale: 1, x: 0, y: 0 }}
+                    transition={{ type: "spring", stiffness: 400, damping: 25, mass: 0.8 }}
+                    className={`w-10 h-14 sm:w-14 sm:h-20 rounded-lg border flex items-center justify-center relative overflow-hidden shadow-[0_0_10px_rgba(0,0,0,0.5)] ${gameState.currentPhase === 'SHOWDOWN' ? 'bg-zinc-800 border-white/20' : 'bg-amber-900/40 border-amber-500/30'}`}
                   >
-                    <LogOut className="w-3 h-3" />
-                  </button>
-                )}
-                <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-gradient-to-br from-amber-500 to-amber-700 flex items-center justify-center mb-1 shadow-lg">
-                  <User className="w-4 h-4 sm:w-5 sm:h-5 text-black" />
-                </div>
-                <span className="text-[10px] sm:text-xs font-medium flex items-center gap-1">
-                  {p.name}
-                  {p.isAI && <span className="text-[7px] bg-white/10 px-1 rounded text-white/40">AI</span>}
-                </span>
-                <span className="text-[8px] sm:text-[10px] text-amber-500/60 font-mono">{p.credits} CR</span>
-                
-                <div className="flex gap-0.5 sm:gap-1 mt-2 flex-wrap justify-center">
-                  {p.hand.map((card, i) => (
-                    <motion.div 
-                      key={card.id} 
-                      layoutId={card.id}
-                      initial={{ scale: 0, x: 0, y: -50 }}
-                      animate={{ scale: 1, x: 0, y: 0 }}
-                      transition={{ type: "spring", stiffness: 400, damping: 25, mass: 0.8 }}
-                      className={`w-10 h-14 sm:w-14 sm:h-20 rounded-lg border flex items-center justify-center relative overflow-hidden ${gameState.currentPhase === 'SHOWDOWN' ? 'bg-zinc-800 border-white/20' : 'bg-amber-900/40 border-amber-500/30'}`}
-                    >
-                      {gameState.currentPhase === 'SHOWDOWN' ? (
-                        <div className="flex flex-col items-center">
-                          <span className={`text-[10px] sm:text-sm font-bold font-mono ${card.type === CardType.POSITIVE ? 'text-blue-400' : card.type === CardType.NEGATIVE ? 'text-red-400' : 'text-amber-400'}`}>
-                            {card.value}
-                          </span>
-                          <SuitIcon suit={card.suit} className="w-2 h-2 sm:w-3 sm:h-3 opacity-40" />
-                        </div>
-                      ) : (
-                        <div className="w-full h-full bg-[repeating-linear-gradient(45deg,transparent,transparent_2px,rgba(245,158,11,0.1)_2px,rgba(245,158,11,0.1)_4px)]" />
-                      )}
-                    </motion.div>
-                  ))}
-                </div>
-
-                {gameState.currentPhase === 'SHOWDOWN' && !p.isFolded && (
-                  <div className="mt-1 text-[7px] sm:text-[8px] font-mono text-amber-500/80 bg-black/40 px-1.5 py-0.5 rounded border border-amber-500/20 text-center">
-                    {evaluateHand(p.hand).rankName}
-                  </div>
-                )}
-
-                {gameState.currentPhase === 'JOINING' && (
-                  <div className={`mt-1 text-[7px] sm:text-[8px] uppercase tracking-widest ${p.isReady ? 'text-green-500' : 'text-white/20'}`}>
-                    {p.isReady ? 'Ready' : 'Waiting'}
-                  </div>
-                )}
+                    {gameState.currentPhase === 'SHOWDOWN' ? (
+                      <div className="flex flex-col items-center">
+                        <span className={`text-[10px] sm:text-sm font-bold font-mono ${card.type === CardType.POSITIVE ? 'text-blue-400' : card.type === CardType.NEGATIVE ? 'text-red-400' : 'text-amber-400'}`}>
+                          {card.value}
+                        </span>
+                        <SuitIcon suit={card.suit} className="w-2 h-2 sm:w-3 sm:h-3 opacity-40" />
+                      </div>
+                    ) : (
+                      <div className="w-full h-full bg-[repeating-linear-gradient(45deg,transparent,transparent_2px,rgba(245,158,11,0.1)_2px,rgba(245,158,11,0.1)_4px)]" />
+                    )}
+                  </motion.div>
+                ))}
               </div>
-            ))}
-          </div>
 
-        {/* Center Table */}
-        <div className="w-full max-w-xl py-6 sm:py-12 sm:aspect-[2.5/1] rounded-[40px] sm:rounded-[60px] border-2 border-white/5 bg-gradient-to-b from-white/5 to-transparent flex flex-col items-center justify-center gap-2 relative mb-4 sm:mb-8">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(245,158,11,0.05)_0%,transparent_70%)]" />
-          
-          {/* Draw Deck & Discard Pile */}
-          <div className="flex gap-6 sm:gap-8 items-center z-10 scale-90 sm:scale-100">
-            {/* Draw Deck */}
-            <div className="flex flex-col items-center gap-1">
-              <span className="text-[10px] uppercase tracking-widest text-white/20">Draw</span>
-              <div className="relative">
-                <div className="w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 bg-amber-900/20 border-amber-500/30 shadow-xl flex items-center justify-center overflow-hidden">
-                  <div className="w-full h-full bg-[repeating-linear-gradient(45deg,transparent,transparent_2px,rgba(245,158,11,0.05)_2px,rgba(245,158,11,0.05)_4px)]" />
+              {gameState.currentPhase === 'SHOWDOWN' && !p.isFolded && (
+                <div className="mt-1 text-[7px] sm:text-[8px] font-mono text-amber-500/80 bg-black/40 px-1.5 py-0.5 rounded border border-amber-500/20 text-center">
+                  {evaluateHand(p.hand).rankName}
                 </div>
-                <div className="absolute -top-1 -right-1 w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 bg-amber-900/20 border-amber-500/30 -z-10" />
-              </div>
-            </div>
+              )}
 
-            {/* Central Pots */}
-            <div className="flex flex-col items-center gap-2 px-6 py-3 bg-black/40 rounded-2xl border border-white/5 backdrop-blur-sm">
-              <div className="flex flex-col items-center">
-                <span className="text-[8px] sm:text-[10px] uppercase tracking-[0.2em] text-white/30">Main Pot</span>
-                <span className="text-xl sm:text-2xl font-mono text-amber-500 font-bold">{gameState.handPot}</span>
-              </div>
-              <div className="w-8 h-px bg-white/10" />
-              <div className="flex flex-col items-center">
-                <span className="text-[8px] sm:text-[10px] uppercase tracking-[0.2em] text-white/30">Sabacc Pot</span>
-                <span className="text-lg sm:text-xl font-mono text-red-500/80">{gameState.sabaccPot}</span>
-              </div>
-            </div>
-
-            {/* Discard Pile */}
-            <div className="flex flex-col items-center gap-1">
-              <span className="text-[10px] uppercase tracking-widest text-white/20">Discard</span>
-              {gameState.discardPile.length > 0 ? (
-                <div className={`w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 flex flex-col items-center justify-center relative shadow-xl bg-zinc-900 border-white/20`}>
-                  <span className={`text-2xl sm:text-3xl font-bold font-mono ${gameState.discardPile[gameState.discardPile.length-1].type === CardType.POSITIVE ? 'text-blue-400' : gameState.discardPile[gameState.discardPile.length-1].type === CardType.NEGATIVE ? 'text-red-400' : 'text-amber-400'}`}>
-                    {gameState.discardPile[gameState.discardPile.length-1].value}
-                  </span>
-                </div>
-              ) : (
-                <div className="w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 border-dashed border-white/10 flex items-center justify-center">
-                  <span className="text-[8px] uppercase tracking-widest text-white/10">Empty</span>
+              {gameState.currentPhase === 'JOINING' && (
+                <div className={`mt-1 text-[7px] sm:text-[8px] uppercase tracking-widest ${p.isReady ? 'text-green-500' : 'text-white/20'}`}>
+                  {p.isReady ? 'Ready' : 'Waiting'}
                 </div>
               )}
             </div>
-          </div>
+          ))}
+
+        {/* Center Table */}
+        <div className="w-full max-w-lg sm:max-w-2xl py-8 sm:py-16 sm:aspect-[2.5/1] rounded-[40px] sm:rounded-[100px] border-4 border-amber-900/30 bg-gradient-to-b from-amber-900/20 to-transparent flex flex-col items-center justify-center gap-2 relative z-0 shadow-[inset_0_0_50px_rgba(0,0,0,0.5)]">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(245,158,11,0.05)_0%,transparent_70%)]" />
+          
+          {/* Draw Deck & Discard Pile */}
+          {gameState.currentPhase !== 'SHOWDOWN' && (
+            <div className="flex gap-6 sm:gap-8 items-center z-10 scale-90 sm:scale-100">
+              {/* Draw Deck */}
+              <div className="flex flex-col items-center gap-1">
+                <span className="text-[10px] uppercase tracking-widest text-white/20">Draw</span>
+                <div className="relative">
+                  <div className="w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 bg-amber-900/20 border-amber-500/30 shadow-xl flex items-center justify-center overflow-hidden">
+                    <div className="w-full h-full bg-[repeating-linear-gradient(45deg,transparent,transparent_2px,rgba(245,158,11,0.05)_2px,rgba(245,158,11,0.05)_4px)]" />
+                  </div>
+                  <div className="absolute -top-1 -right-1 w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 bg-amber-900/20 border-amber-500/30 -z-10" />
+                </div>
+              </div>
+
+              {/* Central Pots */}
+              <div className="flex flex-col items-center gap-2 px-6 py-3 bg-black/40 rounded-2xl border border-white/5 backdrop-blur-sm">
+                <div className="flex flex-col items-center">
+                  <span className="text-[8px] sm:text-[10px] uppercase tracking-[0.2em] text-white/30">Main Pot</span>
+                  <span className="text-xl sm:text-2xl font-mono text-amber-500 font-bold">{gameState.handPot}</span>
+                </div>
+                <div className="w-8 h-px bg-white/10" />
+                <div className="flex flex-col items-center">
+                  <span className="text-[8px] sm:text-[10px] uppercase tracking-[0.2em] text-white/30">Sabacc Pot</span>
+                  <span className="text-lg sm:text-xl font-mono text-red-500/80">{gameState.sabaccPot}</span>
+                </div>
+              </div>
+
+              {/* Discard Pile */}
+              <div className="flex flex-col items-center gap-1">
+                <span className="text-[10px] uppercase tracking-widest text-white/20">Discard</span>
+                {gameState.discardPile.length > 0 ? (
+                  <div className={`w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 flex flex-col items-center justify-center relative shadow-xl bg-zinc-900 border-white/20`}>
+                    <span className={`text-2xl sm:text-3xl font-bold font-mono ${gameState.discardPile[gameState.discardPile.length-1].type === CardType.POSITIVE ? 'text-blue-400' : gameState.discardPile[gameState.discardPile.length-1].type === CardType.NEGATIVE ? 'text-red-400' : 'text-amber-400'}`}>
+                      {gameState.discardPile[gameState.discardPile.length-1].value}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 border-dashed border-white/10 flex items-center justify-center">
+                    <span className="text-[8px] uppercase tracking-widest text-white/10">Empty</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {gameState.currentPhase === 'DICE' && (
             <motion.div 
@@ -1068,11 +1209,11 @@ export default function SabaccGame() {
           )}
 
           {gameState.currentPhase === 'SHOWDOWN' && (
-            <div className="text-center z-10 bg-black/90 p-6 rounded-2xl border-2 border-amber-500 shadow-[0_0_50px_rgba(245,158,11,0.3)] max-w-sm mx-auto">
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center z-20 bg-black/90 p-6 rounded-2xl border-2 border-amber-500 shadow-[0_0_50px_rgba(245,158,11,0.3)] w-full max-w-sm mx-auto">
               <Trophy className="w-12 h-12 text-amber-500 mx-auto mb-4 animate-bounce" />
               <h2 className="text-2xl font-bold text-amber-500 mb-1 uppercase italic tracking-tighter">Winner Announced</h2>
               <div className="text-xl font-mono text-white mb-2">
-                {gameState.players.find(p => p.id === gameState.winnerId)?.name || "Unknown Pilot"}
+                {gameState.players.find(p => p.id === gameState.winnerId)?.name || "Unknown User"}
               </div>
               <p className="text-white/60 mb-6 text-xs uppercase tracking-widest">
                 {gameState.players.find(p => p.id === gameState.winnerId)?.hand && 
@@ -1107,6 +1248,7 @@ export default function SabaccGame() {
               </button>
             </div>
           )}
+        </div>
         </div>
 
         {/* My Hand */}
@@ -1337,7 +1479,7 @@ export default function SabaccGame() {
 
         {/* My Stats */}
         <div className="hidden lg:flex w-48 flex-col justify-center items-end gap-1">
-          <span className="text-[10px] uppercase tracking-widest text-white/40">Active Pilot</span>
+          <span className="text-[10px] uppercase tracking-widest text-white/40">Active User</span>
           <span className="text-xl font-mono text-amber-500">{me?.name}</span>
           <div className="flex items-center gap-2 text-[10px] text-white/40 uppercase tracking-widest">
             <User className="w-3 h-3" /> Status: {me?.isFolded ? 'Folded' : 'In Game'}

@@ -44,10 +44,12 @@ export interface GameState {
   handPot: number;
   sabaccPot: number;
   currentRound: number; // 1, 2, 3
+  gamesPlayed: number;
   currentPhase: 'JOINING' | 'CARD' | 'BETTING' | 'DICE' | 'SHOWDOWN';
   turnIndex: number;
   dealerIndex: number;
   currentBet: number;
+  bettingLapComplete?: boolean;
   lastDiceRoll: [number, number] | null;
   winnerId: string | null;
   logs: string[];
@@ -134,62 +136,48 @@ export const evaluateHand = (hand: Card[]) => {
   
   let rankScore = 0;
   let rankName = "";
-  let isSpecialtySabacc = false;
 
   if (sum === 0) {
     if (sylopCount === 2) {
       rankScore = 1000;
       rankName = "Pure Sabacc";
-      isSpecialtySabacc = true;
     } else if (sylopCount === 1 && counts[10] === 4) {
       rankScore = 900;
       rankName = "Full Sabacc";
-      isSpecialtySabacc = true;
     } else if (sylopCount === 1 && hasFourOfAKind(counts)) {
       rankScore = 800;
       rankName = "Fleet";
-      isSpecialtySabacc = true;
     } else if (sylopCount === 1 && hasPairs(counts) >= 1) {
       rankScore = 700;
       rankName = "Yee-Haa";
-      isSpecialtySabacc = true;
     } else if (hasThreeOfAKind(counts) && hasPairs(counts) >= 2) {
       rankScore = 600;
       rankName = "Rhylet";
-      isSpecialtySabacc = true;
     } else if (hasFourOfAKind(counts)) {
       rankScore = 500;
       rankName = "Squadron";
-      isSpecialtySabacc = true;
     } else if (isGeeWhiz(nonSylops)) {
       rankScore = 450;
       rankName = "Gee Whiz";
-      isSpecialtySabacc = true;
     } else if (hasStraight(nonSylops, 4)) {
       rankScore = 400;
       rankName = "Straight Khyron";
-      isSpecialtySabacc = true;
     } else if (hasThreeOfAKind(counts)) {
       rankScore = 200;
       rankName = "Banthas Wild";
-      isSpecialtySabacc = true;
     } else if (hasPairs(counts) >= 2) {
       rankScore = 100;
       rankName = "Rule of Two";
-      isSpecialtySabacc = true;
     } else if (hasPairs(counts) >= 1) {
       rankScore = 50;
       rankName = "Sabacc (Pair)";
-      isSpecialtySabacc = true;
     } else {
       rankScore = 10;
       rankName = "Sabacc";
-      isSpecialtySabacc = false;
     }
   } else {
     rankScore = 0;
     rankName = `Nulrhek (${sum})`;
-    isSpecialtySabacc = false;
   }
 
   // Tie-breakers
@@ -223,5 +211,5 @@ export const evaluateHand = (hand: Card[]) => {
   finalScore += highestPositiveCard;
   finalScore += highestSuit * 0.1;
 
-  return { sum, absSum, score: finalScore, rankName, isSpecialtySabacc };
+  return { sum, absSum, score: finalScore, rankName };
 };

@@ -28,7 +28,7 @@ app.prepare().then(() => {
   io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
-    socket.on('joinRoom', ({ roomId, playerName, startingCredits, isSpectator }) => {
+    socket.on('joinRoom', ({ roomId, playerName, isSpectator }) => {
       socket.join(roomId);
       // @ts-ignore
       socket.roomId = roomId;
@@ -42,6 +42,7 @@ app.prepare().then(() => {
           handPot: 0,
           sabaccPot: 0,
           currentRound: 1,
+          gamesPlayed: 0,
           currentPhase: 'JOINING',
           turnIndex: 0,
           dealerIndex: 0,
@@ -71,7 +72,7 @@ app.prepare().then(() => {
           id: socket.id,
           name: playerName || `Player ${game.players.length + 1}`,
           hand: [],
-          credits: parseInt(startingCredits) || 1000,
+          credits: 1000,
           isFolded: !!isSpectator || isMidGame,
           isReady: !!isSpectator,
           betThisRound: 0,
@@ -81,6 +82,17 @@ app.prepare().then(() => {
       }
 
       io.to(roomId).emit('gameStateUpdate', game);
+    });
+
+    socket.on('updateCredits', ({ roomId, credits }) => {
+      const game = games[roomId];
+      if (!game) return;
+      const player = game.players.find(p => p.id === socket.id);
+      if (player && (game.currentPhase === 'JOINING' || game.currentPhase === 'SHOWDOWN')) {
+        player.credits = credits;
+        game.logs.push(`${player.name} updated their credits to ${credits}.`);
+        io.to(roomId).emit('gameStateUpdate', game);
+      }
     });
 
     socket.on('toggleSpectator', ({ roomId }) => {
@@ -193,12 +205,12 @@ app.prepare().then(() => {
     socket.on('addCredits', ({ roomId, amount }) => {
       const game = games[roomId];
       if (!game) return;
-      // Prevent adding credits during active gameplay
-      if (game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN') {
-        return;
-      }
       const player = game.players.find(p => p.id === socket.id);
       if (player) {
+        if (game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN' && !player.isSpectator && !player.isFolded) {
+          socket.emit('error', "You cannot add credits while playing a hand.");
+          return;
+        }
         player.credits += amount;
         game.logs.push(`${player.name} added ${amount} credits.`);
         io.to(roomId).emit('gameStateUpdate', game);
@@ -263,11 +275,6 @@ app.prepare().then(() => {
         }
         game.logs.push(`${currentPlayer.name} checked.`);
       } else if (action === 'call') {
-        // Cannot call if already all-in
-        if (currentPlayer.credits === 0) {
-          game.logs.push(`${currentPlayer.name} is already all in.`);
-          return;
-        }
         const callAmount = Math.min(game.currentBet - currentPlayer.betThisRound, currentPlayer.credits);
         if (callAmount > 0) {
           currentPlayer.credits -= callAmount;
@@ -556,24 +563,27 @@ app.prepare().then(() => {
             game.logs.push(`${currentPlayer.name} raised to ${game.currentBet}.`);
           } else {
             // Call instead
-            currentPlayer.credits -= callAmount;
-            currentPlayer.betThisRound += callAmount;
-            game.handPot += callAmount;
-            game.logs.push(`${currentPlayer.name} called.`);
+            const actualCall = Math.min(callAmount, currentPlayer.credits);
+            currentPlayer.credits -= actualCall;
+            currentPlayer.betThisRound += actualCall;
+            game.handPot += actualCall;
+            game.logs.push(`${currentPlayer.name} called${actualCall < callAmount ? ' ALL IN' : ''}.`);
           }
         } else {
-          currentPlayer.credits -= callAmount;
-          currentPlayer.betThisRound += callAmount;
-          game.handPot += callAmount;
-          game.logs.push(`${currentPlayer.name} called.`);
+          const actualCall = Math.min(callAmount, currentPlayer.credits);
+          currentPlayer.credits -= actualCall;
+          currentPlayer.betThisRound += actualCall;
+          game.handPot += actualCall;
+          game.logs.push(`${currentPlayer.name} called${actualCall < callAmount ? ' ALL IN' : ''}.`);
         }
       } else if (absSum <= 5) {
         // Decent hand: Call
         if (callAmount <= 50) {
-          currentPlayer.credits -= callAmount;
-          currentPlayer.betThisRound += callAmount;
-          game.handPot += callAmount;
-          game.logs.push(`${currentPlayer.name} called.`);
+          const actualCall = Math.min(callAmount, currentPlayer.credits);
+          currentPlayer.credits -= actualCall;
+          currentPlayer.betThisRound += actualCall;
+          game.handPot += actualCall;
+          game.logs.push(`${currentPlayer.name} called${actualCall < callAmount ? ' ALL IN' : ''}.`);
         } else {
           currentPlayer.isFolded = true;
           game.logs.push(`${currentPlayer.name} folded.`);
@@ -584,10 +594,11 @@ app.prepare().then(() => {
           currentPlayer.isFolded = true;
           game.logs.push(`${currentPlayer.name} folded.`);
         } else {
-          currentPlayer.credits -= callAmount;
-          currentPlayer.betThisRound += callAmount;
-          game.handPot += callAmount;
-          game.logs.push(`${currentPlayer.name} called.`);
+          const actualCall = Math.min(callAmount, currentPlayer.credits);
+          currentPlayer.credits -= actualCall;
+          currentPlayer.betThisRound += actualCall;
+          game.handPot += actualCall;
+          game.logs.push(`${currentPlayer.name} called${actualCall < callAmount ? ' ALL IN' : ''}.`);
         }
       }
       advanceTurn(game);
@@ -605,33 +616,41 @@ app.prepare().then(() => {
       return;
     }
 
-    game.turnIndex = (game.turnIndex + 1) % game.players.length;
-    while (game.players[game.turnIndex].isFolded || game.players[game.turnIndex].isSpectator) {
-      game.turnIndex = (game.turnIndex + 1) % game.players.length;
-    }
+    let nextIndex = game.turnIndex;
+    let passedDealer = false;
+    let attempts = 0;
+    
+    do {
+      if (nextIndex === game.dealerIndex) passedDealer = true;
+      nextIndex = (nextIndex + 1) % game.players.length;
+      attempts++;
+    } while (
+      (game.players[nextIndex].isFolded || 
+       game.players[nextIndex].isSpectator || 
+       (game.currentPhase === 'BETTING' && game.players[nextIndex].credits === 0)) 
+      && attempts < game.players.length
+    );
+
+    game.turnIndex = nextIndex;
 
     // Phase transition logic
-    // Find the first active player after the dealer
-    let firstActiveAfterDealer = (game.dealerIndex + 1) % game.players.length;
-    while (game.players[firstActiveAfterDealer].isFolded || game.players[firstActiveAfterDealer].isSpectator) {
-      firstActiveAfterDealer = (firstActiveAfterDealer + 1) % game.players.length;
-    }
-
-    if (game.turnIndex === firstActiveAfterDealer) {
+    if (passedDealer) {
       if (game.currentPhase === 'CARD') {
         game.currentPhase = 'BETTING';
         game.currentBet = 0;
+        game.bettingLapComplete = false;
         game.players.forEach(p => p.betThisRound = 0);
         game.logs.push("Betting Phase started.");
       } else if (game.currentPhase === 'BETTING') {
-        // Check if all active players have matched the current bet
-        const allMatched = activePlayers.every(p => p.betThisRound === game.currentBet);
-        if (allMatched) {
-          game.currentPhase = 'DICE';
-          handleDicePhase(game);
-        } else {
-          game.logs.push("Waiting for all bets to be matched.");
-        }
+        game.bettingLapComplete = true;
+      }
+    }
+
+    if (game.currentPhase === 'BETTING') {
+      const allMatched = activePlayers.every(p => p.credits === 0 || p.betThisRound === game.currentBet);
+      if (game.bettingLapComplete && allMatched) {
+        game.currentPhase = 'DICE';
+        handleDicePhase(game);
       }
     }
 
@@ -668,7 +687,17 @@ app.prepare().then(() => {
       if (game.currentRound < 3) {
         game.currentRound++;
         game.currentPhase = 'CARD';
+        
+        let nextIndex = game.dealerIndex;
+        let attempts = 0;
+        do {
+          nextIndex = (nextIndex + 1) % game.players.length;
+          attempts++;
+        } while ((game.players[nextIndex].isFolded || game.players[nextIndex].isSpectator) && attempts < game.players.length);
+        game.turnIndex = nextIndex;
+        
         game.logs.push(`Round ${game.currentRound} Card Phase started.`);
+        checkAndProcessAITurn(game);
       } else {
         game.currentPhase = 'SHOWDOWN';
         handleShowdown(game);
@@ -696,12 +725,17 @@ app.prepare().then(() => {
     game.logs.push(`Winner: ${winner.name} with ${results[0].evaluation.rankName}`);
     
     winner.credits += game.handPot;
-    if (results[0].evaluation.isSpecialtySabacc) {
-      winner.credits += game.sabaccPot;
-      game.sabaccPot = 0;
-      game.logs.push(`${winner.name} takes the Sabacc Pot!`);
+    if (results[0].evaluation.sum === 0) {
+      if (results[0].evaluation.score >= 50 * 1000000) {
+        winner.credits += game.sabaccPot;
+        game.sabaccPot = 0;
+        game.logs.push(`${winner.name} takes the Sabacc Pot with a specialty hand!`);
+      } else {
+        game.logs.push(`${winner.name} won with a regular Sabacc. Sabacc Pot carries over.`);
+      }
     }
     game.handPot = 0;
+    game.gamesPlayed++;
     
     game.currentPhase = 'SHOWDOWN';
     game.players.forEach(p => {
