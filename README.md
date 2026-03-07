@@ -12,17 +12,115 @@ A multiplayer web-based version of the 'Corellian Spike' Sabacc game.
 
 ## Deployment
 
+### Local Development
+```bash
+npm install
+npm run dev  # starts tsx server.ts on http://localhost:3000
+```
+
+### Docker
+
+#### Build and run locally
+```bash
+docker build -t sabacc .
+docker run -p 3000:3000 sabacc
+```
+
+#### Using Docker Compose (build locally)
+```bash
+docker-compose up
+```
+
+#### Using Docker Compose (GHCR image)
+```yaml
+version: '3.8'
+
+services:
+  sabacc:
+    image: ghcr.io/thenotoriousjeremy/sabacc:latest
+    container_name: sabacc
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - TZ=Etc/UTC
+    restart: unless-stopped
+```
+
+**Notes:**
+- Replace `thenotoriousjerry` with your GitHub username
+- The service will be available at `http://localhost:3000`
+- Watchtower automatically checks for and pulls new image versions daily
+- Remove the `watchtower` service if you prefer manual updates
+
+Start the stack:
+```bash
+docker-compose up -d
+```
+
+View logs:
+```bash
+docker-compose logs -f sabacc
+```
+
+Stop the stack:
+```bash
+docker-compose down
+```
+
+#### GitHub Container Registry (GHCR)
+This repository automatically builds and pushes Docker images to GHCR on every push to `main`, `master`, or `releases/**` branches.
+
+Pull and run the latest image manually:
+```bash
+docker pull ghcr.io/thenotoriousjerry/sabacc:latest
+docker run -p 3000:3000 ghcr.io/thenotoriousjerry/sabacc:latest
+```
+
 ### Railway / Render / DigitalOcean
 1. **Environment Variables**:
    - `NODE_ENV=production`
    - `PORT=3000`
 2. **Build Command**: `npm run build`
-3. **Start Command**: `npm start` (runs `node server.ts`)
+3. **Start Command**: `npm start` (runs `tsx server.ts`)
 
 ### Vercel
 Note: Vercel's Serverless Functions do not support long-lived WebSocket connections natively. For Vercel deployment, you would typically need to use a separate backend for Socket.io (like a dedicated Node.js server on Railway) or a service like Pusher/Ably.
 
-However, if using a custom server like this one, it is best deployed on a platform that supports persistent processes (Railway, Render, Fly.io, etc.).
+However, if using a custom server like this one, it is best deployed on a platform that supports persistent processes (Railway, Render, Fly.io, etc.)
+
+## Game Rules
+
+This implementation follows the **Corellian Spike variant** of Sabacc from Star Wars Legends.
+
+### Hand Rankings (highest to lowest)
+1. **Pure Sabacc** - Two Sylops (value 0) = Automatic win
+2. **Squadron** - Four cards of same value = Best non-Sabacc hand
+3. **Gee Whiz** - Five cards totaling 23
+4. **Full House** - Three of a kind + pair
+5. **Flush** - Five cards of the same suit
+6. **Straight** - Five cards in sequence
+7. **Three of a Kind**
+8. **Pair**
+9. **Nulrhek** - Any other hand; closest to 0 wins
+
+### Deck Composition
+- 30 positive cards (values 1-15, 2 of each suit)
+- 30 negative cards (values -1 to -15, 2 of each suit)
+- 2 Sylops (value 0, rank trump all)
+- **Total: 62 cards**
+
+### Gameplay Phases
+1. **Card Phase** - Players draw, swap, or stand to improve their hands
+2. **Betting Phase** - Players bet credits based on hand strength
+3. **Dice Phase** - The Spike Dice is rolled; if triggered, hands are redealt (Sabacc Shift)
+
+### Antes & Pots
+- **Hand Pot**: Ante 10 credits + all bets
+- **Sabacc Pot**: Fixed 5 credits per player (side pot)
+- **Sabacc Winner**: Gets the Sabacc Pot if they win
+
+For more details, see [Star Wars Legends - Sabacc](https://starwars.fandom.com/wiki/Sabacc).
 
 ## How to Play
 1. Enter your name and a Room ID.
