@@ -39,5 +39,5 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ toLower(github.repository_owner) }}/sabacc:latest
-            ghcr.io/${{ toLower(github.repository_owner) }}/sabacc:${{ github.sha }}
+            ghcr.io/${{ lower(github.repository_owner) }}/sabacc:latest
+            ghcr.io/${{ lower(github.repository_owner) }}/sabacc:${{ github.sha }}
