@@ -189,7 +189,9 @@ async function bootstrap() {
     socket.on('joinRoom', ({ roomId, playerName, isSpectator, token }) => {
       const code = normalizeRoomCode(roomId);
       if (!code) {
-        socket.emit('error', 'Room codes are 4-6 letters or numbers.');
+        // joinRejected is distinct from a generic error so the client knows to
+        // fall back to the join screen instead of waiting forever.
+        socket.emit('joinRejected', { reason: 'Room codes are 4-6 letters or numbers.' });
         return;
       }
 
@@ -197,7 +199,7 @@ async function bootstrap() {
       // you alone in a brand new room that looks like the one you wanted.
       const game = games[code];
       if (!game) {
-        socket.emit('error', `Room ${code} does not exist. Check the code or create a new room.`);
+        socket.emit('joinRejected', { reason: `Room ${code} no longer exists.` });
         return;
       }
 
@@ -229,7 +231,7 @@ async function bootstrap() {
       }
 
       if (game.players.length >= MAX_PLAYERS_PER_ROOM) {
-        socket.emit('error', `Room ${code} is full.`);
+        socket.emit('joinRejected', { reason: `Room ${code} is full.` });
         return;
       }
 
@@ -346,9 +348,13 @@ async function bootstrap() {
       if (game.currentPhase !== 'JOINING') return;
       if (game.players.length >= MAX_PLAYERS_PER_ROOM) return;
 
-      const aiId = `ai-${Math.random().toString(36).substr(2, 9)}`;
+      const aiId = `ai-${randomUUID()}`;
       const aiNames = ["C-3PO", "R2-D2", "L3-37", "IG-88", "HK-47", "K-2SO", "Chopper"];
-      const name = aiNames[Math.floor(Math.random() * aiNames.length)] + " (Bot)";
+      // Two bots with the same name are indistinguishable at the table.
+      const taken = new Set(game.players.map(p => p.name));
+      const free = aiNames.map(n => `${n} (Bot)`).filter(n => !taken.has(n));
+      const pool = free.length > 0 ? free : aiNames.map(n => `${n} (Bot)`);
+      const name = pool[randomInt(pool.length)];
 
       game.players.push({
         id: aiId,

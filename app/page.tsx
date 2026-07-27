@@ -141,6 +141,7 @@ export default function SabaccGame() {
   const [chatMessage, setChatMessage] = useState('');
   const [isRollingDice, setIsRollingDice] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showLog, setShowLog] = useState(false);
   const [showAllInConfirm, setShowAllInConfirm] = useState(false);
   const [showBuyIn, setShowBuyIn] = useState(false);
   const [buyInAmount, setBuyInAmount] = useState<number>(1000);
@@ -183,8 +184,22 @@ export default function SabaccGame() {
     volumeRef.current = volume;
   }, [volume]);
 
+  // An AudioContext can only start from a user gesture, and rejoining after a
+  // refresh never touches the join button. Arm on the first interaction of any
+  // kind so a reconnected player is not left with silence.
+  useEffect(() => {
+    const arm = () => initAudio();
+    const options = { once: true, passive: true } as const;
+    window.addEventListener('pointerdown', arm, options);
+    window.addEventListener('keydown', arm, options);
+    return () => {
+      window.removeEventListener('pointerdown', arm);
+      window.removeEventListener('keydown', arm);
+    };
+  }, []);
+
   // Sound effects synthesizer
-  const playSound = React.useCallback((type: 'card' | 'chips' | 'dice' | 'win' | 'fold' | 'click' | 'check' | 'sabacc_shift' | 'no_shift') => {
+  const playSound = React.useCallback((type: 'card' | 'chips' | 'dice' | 'win' | 'fold' | 'click' | 'check' | 'sabacc_shift' | 'no_shift' | 'turn' | 'lose' | 'join' | 'error') => {
     if (!audioCtxRef.current) return;
     
     const ctx = audioCtxRef.current;
@@ -350,6 +365,70 @@ export default function SabaccGame() {
         osc.stop(now + 0.1);
         break;
       }
+      case 'turn': {
+        // Rising two-note prompt. This is the cue you need if the tab is in the
+        // background or the phone is in a pocket, so it carries further than a
+        // click without being alarming.
+        [659.25, 987.77].forEach((f, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(f, now + i * 0.11);
+          gain.gain.setValueAtTime(0, now + i * 0.11);
+          gain.gain.linearRampToValueAtTime(0.22, now + i * 0.11 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.11 + 0.3);
+          osc.connect(gain);
+          gain.connect(masterGain);
+          osc.start(now + i * 0.11);
+          osc.stop(now + i * 0.11 + 0.3);
+        });
+        break;
+      }
+      case 'lose': {
+        // Falling minor third, the mirror of the win chime.
+        [392.0, 311.13].forEach((f, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(f, now + i * 0.16);
+          gain.gain.setValueAtTime(0, now + i * 0.16);
+          gain.gain.linearRampToValueAtTime(0.16, now + i * 0.16 + 0.03);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.16 + 0.45);
+          osc.connect(gain);
+          gain.connect(masterGain);
+          osc.start(now + i * 0.16);
+          osc.stop(now + i * 0.16 + 0.45);
+        });
+        break;
+      }
+      case 'join': {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(520, now);
+        osc.frequency.exponentialRampToValueAtTime(780, now + 0.12);
+        gain.gain.setValueAtTime(0.12, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+        osc.connect(gain);
+        gain.connect(masterGain);
+        osc.start();
+        osc.stop(now + 0.15);
+        break;
+      }
+      case 'error': {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(160, now);
+        osc.frequency.setValueAtTime(120, now + 0.09);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+        osc.connect(gain);
+        gain.connect(masterGain);
+        osc.start();
+        osc.stop(now + 0.2);
+        break;
+      }
     }
   }, []);
 
@@ -366,6 +445,14 @@ export default function SabaccGame() {
 
   const playerNameRef = useRef(playerName);
   const roomIdRef = useRef(roomId);
+  // The socket handlers are registered once, so they read identity and the
+  // previous state through refs rather than stale closure values.
+  const myPlayerIdRef = useRef<string | null>(null);
+  const prevStateRef = useRef<GameState | null>(null);
+
+  useEffect(() => {
+    myPlayerIdRef.current = myPlayerId;
+  }, [myPlayerId]);
 
   const isSpectatorRef = useRef(isSpectator);
 
@@ -408,6 +495,7 @@ export default function SabaccGame() {
     // The server owns identity. It tells us our token and our player id.
     newSocket.on('session', (session: StoredSession) => {
       saveSession(session);
+      myPlayerIdRef.current = session.playerId;
       saveLastTable({
         roomId: session.roomId,
         playerName: playerNameRef.current,
@@ -417,40 +505,65 @@ export default function SabaccGame() {
     });
 
     newSocket.on('gameStateUpdate', (state: GameState) => {
-      // Play sounds based on phase changes or actions
-      setGameState(prev => {
-        if (prev) {
-          if (state.currentPhase !== prev.currentPhase) {
-            if (state.currentPhase === 'DICE') {
-              playSound('dice');
-              setIsRollingDice(true);
-              setTimeout(() => {
-                setIsRollingDice(false);
-                if (state.lastDiceRoll) {
-                  if (state.lastDiceRoll[0] === state.lastDiceRoll[1]) {
-                    playSound('sabacc_shift');
-                  } else {
-                    playSound('no_shift');
-                  }
-                }
-              }, 2000);
+      // Sound effects are deliberately outside the state updater: React runs
+      // updaters twice under Strict Mode, which fired every cue twice.
+      const prev = prevStateRef.current;
+      prevStateRef.current = state;
+      setGameState(state);
+      if (!prev) return;
+
+      const myId = myPlayerIdRef.current;
+
+      if (state.currentPhase !== prev.currentPhase) {
+        if (state.currentPhase === 'DICE') {
+          playSound('dice');
+          setIsRollingDice(true);
+          setTimeout(() => {
+            setIsRollingDice(false);
+            if (state.lastDiceRoll) {
+              playSound(state.lastDiceRoll[0] === state.lastDiceRoll[1] ? 'sabacc_shift' : 'no_shift');
             }
-            if (state.currentPhase === 'SHOWDOWN') playSound('win');
-          }
-          if (state.logs.length > prev.logs.length) {
-            const lastLog = state.logs[state.logs.length - 1];
-            if (lastLog.includes('drew') || lastLog.includes('swapped')) playSound('card');
-            if (lastLog.includes('bet') || lastLog.includes('raised') || lastLog.includes('called')) playSound('chips');
-            if (lastLog.includes('folded')) playSound('fold');
-          }
+          }, 2000);
         }
-        return state;
-      });
+        // Winning and losing should not sound the same.
+        if (state.currentPhase === 'SHOWDOWN') {
+          const iWon = !!myId && state.winnerId === myId;
+          const iPlayed = state.players.some(p => p.id === myId && !p.isSpectator);
+          playSound(iWon ? 'win' : iPlayed ? 'lose' : 'no_shift');
+        }
+      }
+
+      // Your turn is the one cue you cannot afford to miss on a phone.
+      const wasMyTurn = prev.players[prev.turnIndex]?.id === myId;
+      const isMyTurn = state.players[state.turnIndex]?.id === myId;
+      const actionablePhase = state.currentPhase === 'CARD' || state.currentPhase === 'BETTING';
+      if (isMyTurn && !wasMyTurn && actionablePhase && myId) playSound('turn');
+
+      if (state.players.length > prev.players.length) playSound('join');
+
+      if (state.logs.length > prev.logs.length) {
+        const lastLog = state.logs[state.logs.length - 1];
+        if (lastLog.includes('drew') || lastLog.includes('swapped')) playSound('card');
+        if (lastLog.includes('bet') || lastLog.includes('raised') || lastLog.includes('called')) playSound('chips');
+        if (lastLog.includes('folded')) playSound('fold');
+      }
     });
 
     newSocket.on('error', (msg: string) => {
+      playSound('error');
       setErrorMessage(msg);
       setTimeout(() => setErrorMessage(null), 5000);
+    });
+
+    // The room is gone or unusable, so drop back to the join screen instead of
+    // sitting on the connecting spinner forever.
+    newSocket.on('joinRejected', ({ reason }: { reason: string }) => {
+      clearLastTable();
+      setErrorMessage(reason);
+      setTimeout(() => setErrorMessage(null), 6000);
+      setGameState(null);
+      setMyPlayerId(null);
+      setIsJoined(false);
     });
 
     newSocket.on('connect_error', () => {
@@ -558,9 +671,15 @@ export default function SabaccGame() {
       const endAngle = Math.PI * 0.05;
       angle = startAngle - (index * ((startAngle - endAngle) / (total - 1)));
     }
-    const rx = 45;
-    const ry = 42;
-    const x = 50 + rx * Math.cos(angle);
+    // Seats are centred on their coordinate, so a wide arc pushed the outermost
+    // cards past the edge of a phone screen. Tighten the arc and keep every
+    // centre far enough inside that half a card still fits.
+    const rx = 40;
+    const ry = 40;
+    // Seats are centred on their coordinate, so keep every centre far enough
+    // inside that half a card still fits at the narrowest supported width.
+    const edgeMargin = 15;
+    const x = Math.min(100 - edgeMargin, Math.max(edgeMargin, 50 + rx * Math.cos(angle)));
     const y = 50 - ry * Math.sin(angle);
     return {
       left: `${x}%`,
@@ -573,7 +692,7 @@ export default function SabaccGame() {
 
   if (!isJoined) {
     return (
-      <div className="min-h-screen bg-[#0a0a0a] text-white flex items-center justify-center p-4 font-sans">
+      <div className="min-h-[100dvh] bg-[#0a0a0a] text-white flex items-center justify-center p-4 font-sans">
         <div className="max-w-md w-full bg-[#1a1a1a] border border-amber-500/30 rounded-2xl p-8 shadow-[0_0_50px_rgba(245,158,11,0.1)]">
           <h1 className="text-4xl font-bold text-center mb-8 tracking-tighter text-amber-500 uppercase italic">
             Corellian Spike
@@ -587,7 +706,7 @@ export default function SabaccGame() {
                   type="text" 
                   value={playerName}
                   onChange={(e) => setPlayerName(e.target.value)}
-                  className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 focus:outline-none focus:border-amber-500 transition-colors"
+                  className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 text-base focus:outline-none focus:border-amber-500 transition-colors"
                   placeholder="Han Solo"
                 />
               </div>
@@ -606,7 +725,7 @@ export default function SabaccGame() {
                       const trimmed = serverUrl.trim();
                       if (trimmed) window.localStorage.setItem(HOST_STORAGE_KEY, trimmed);
                     }}
-                    className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 focus:outline-none focus:border-amber-500 transition-colors"
+                    className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 text-base focus:outline-none focus:border-amber-500 transition-colors"
                     placeholder="http://192.168.1.100:3000"
                   />
                 </div>
@@ -623,7 +742,7 @@ export default function SabaccGame() {
                   type="text"
                   value={roomId}
                   onChange={(e) => setRoomId(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6))}
-                  className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 focus:outline-none focus:border-amber-500 transition-colors tracking-[0.3em] font-mono"
+                  className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 text-base focus:outline-none focus:border-amber-500 transition-colors tracking-[0.3em] font-mono"
                   placeholder="XKQ7P"
                   autoCapitalize="characters"
                   autoComplete="off"
@@ -681,14 +800,18 @@ export default function SabaccGame() {
     );
   }
 
-  if (!gameState) return <div className="min-h-screen bg-black flex items-center justify-center text-amber-500">Connecting to Holonet...</div>;
+  if (!gameState) return <div className="min-h-[100dvh] bg-black flex items-center justify-center text-amber-500">Connecting to Holonet...</div>;
 
   const me = gameState.players.find(p => p.id === myPlayerId);
   const isMyTurn = gameState.players[gameState.turnIndex]?.id === myPlayerId;
+  const isHandInPlay = gameState.currentPhase === 'CARD' || gameState.currentPhase === 'BETTING';
   const myDisplayedPlayer = displayedPlayers.find(p => p.id === myPlayerId);
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white font-sans overflow-hidden flex flex-col">
+    // A definite height, not just a minimum: with only min-height the column
+    // grows to fit its children and flex-1 never has to shrink, which pushed
+    // the action buttons below the fold on shorter screens.
+    <div className="h-[100dvh] bg-[#050505] text-white font-sans overflow-hidden flex flex-col">
       {/* Rules Modal */}
       <AnimatePresence>
         {showRules && !isRulesPinned && (
@@ -1003,7 +1126,7 @@ export default function SabaccGame() {
         <div className="flex items-center gap-2">
           <button 
             onClick={leaveRoom}
-            className="p-1.5 hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
+            className="p-1.5 min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 inline-flex items-center justify-center hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
             title="Leave Room"
           >
             <ChevronLeft className="w-5 h-5" />
@@ -1014,8 +1137,8 @@ export default function SabaccGame() {
           </div>
         </div>
         
-        <div className="flex items-center gap-3 sm:gap-5">
-          <div className="flex flex-col items-end">
+        <div className="flex items-center gap-2 sm:gap-5">
+          <div className="hidden sm:flex flex-col items-end">
             <span className="text-[8px] sm:text-[10px] uppercase tracking-widest text-white/40">Game</span>
             <span className="text-sm sm:text-lg font-mono font-bold text-white/80">{gameState.gamesPlayed + 1}</span>
           </div>
@@ -1024,7 +1147,7 @@ export default function SabaccGame() {
             <span className="text-sm sm:text-lg font-mono font-bold text-blue-400">{gameState.currentRound}/3</span>
           </div>
           <div 
-            className={`flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/20 border border-amber-500/40 rounded-xl shadow-[0_0_15px_rgba(245,158,11,0.2)] transition-colors ${(gameState.currentPhase === 'JOINING' || gameState.currentPhase === 'SHOWDOWN') ? 'cursor-pointer hover:bg-amber-500/30' : ''}`}
+            className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 bg-amber-500/20 border border-amber-500/40 rounded-xl shadow-[0_0_15px_rgba(245,158,11,0.2)] transition-colors ${(gameState.currentPhase === 'JOINING' || gameState.currentPhase === 'SHOWDOWN') ? 'cursor-pointer hover:bg-amber-500/30' : ''}`}
             onClick={() => {
               if (gameState.currentPhase === 'JOINING' || gameState.currentPhase === 'SHOWDOWN') {
                 playSound('click');
@@ -1035,21 +1158,21 @@ export default function SabaccGame() {
             title={(gameState.currentPhase === 'JOINING' || gameState.currentPhase === 'SHOWDOWN') ? "Edit Credits" : "Credits"}
           >
             <Coins className="w-4 h-4 sm:w-5 sm:h-5 text-amber-500" />
-            <span className="text-lg sm:text-xl font-mono font-bold text-amber-500">{me?.credits || 0}</span>
+            <span className="text-base sm:text-xl font-mono font-bold text-amber-500">{me?.credits || 0}</span>
           </div>
-          <div className="flex items-center gap-1 ml-1 sm:ml-2 border-l border-white/10 pl-2 sm:pl-3">
+          <div className="flex items-center gap-0 sm:gap-1 ml-0 sm:ml-2 border-l border-white/10 pl-1 sm:pl-3">
             <button 
               onClick={() => {
                 setShowRules(true);
                 setIsRulesPinned(false);
               }}
-              className="p-1.5 hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
+              className="p-1.5 min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 inline-flex items-center justify-center hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
             >
               <HelpCircle className="w-4 h-4" />
             </button>
             <button 
               onClick={() => setShowSettings(true)}
-              className="p-1.5 hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
+              className="p-1.5 min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 inline-flex items-center justify-center hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
             >
               <Settings className="w-4 h-4" />
             </button>
@@ -1129,7 +1252,7 @@ export default function SabaccGame() {
       </AnimatePresence>
 
       {/* Main Table Area */}
-      <main className="flex-1 relative p-2 sm:p-4 flex flex-col items-center justify-center overflow-hidden min-h-[500px]">
+      <main className="flex-1 min-h-0 relative p-2 sm:p-4 flex flex-col items-center justify-center overflow-hidden min-h-[260px]">
           {me?.isSpectator && (
             <div className="absolute top-4 z-50 w-full max-w-md bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex items-center justify-between backdrop-blur-sm">
               <div className="flex items-center gap-3">
@@ -1151,13 +1274,13 @@ export default function SabaccGame() {
             </div>
           )}
 
-        <div className="relative w-full max-w-5xl flex-1 flex items-center justify-center mt-8 sm:mt-12">
+        <div className="relative w-full max-w-5xl flex-1 min-h-0 flex items-center justify-center mt-4 sm:mt-12">
           {/* Opponents */}
-          {displayedPlayers.filter(p => p.id !== socket?.id).map((p, i, arr) => (
-            <div 
-              key={p.id} 
+          {displayedPlayers.filter(p => p.id !== myPlayerId).map((p, i, arr) => (
+            <div
+              key={p.id}
               style={getOpponentStyle(i, arr.length)}
-              className={`flex flex-col items-center p-2 sm:p-3 rounded-xl border transition-all min-w-[90px] sm:min-w-[120px] z-10 ${p.isFolded ? 'opacity-40 grayscale' : 'bg-black/60 backdrop-blur-md border-white/10 shadow-xl'}`}
+              className={`flex flex-col items-center p-2 sm:p-3 rounded-xl border transition-all w-[clamp(76px,21vw,128px)] z-10 ${p.isFolded ? 'opacity-40 grayscale' : 'bg-black/60 backdrop-blur-md border-white/10 shadow-xl'} ${p.isConnected === false ? 'ring-1 ring-red-500/40' : ''}`}
             >
               {/* Dealer Button for Opponents */}
               {gameState.players[gameState.dealerIndex]?.id === p.id && (
@@ -1168,7 +1291,7 @@ export default function SabaccGame() {
               {gameState.currentPhase === 'JOINING' && p.isAI && (
                 <button 
                   onClick={() => removeAI(p.id)}
-                  className="absolute -top-2 -left-2 bg-red-500 hover:bg-red-600 text-white p-1 rounded-full shadow-lg transition-colors z-10"
+                  className="absolute -top-2 -left-2 w-7 h-7 sm:w-5 sm:h-5 inline-flex items-center justify-center bg-red-500 hover:bg-red-600 text-white rounded-full shadow-lg transition-colors z-10"
                   title="Remove Bot"
                 >
                   <LogOut className="w-3 h-3" />
@@ -1183,15 +1306,17 @@ export default function SabaccGame() {
               </span>
               <span className="text-[8px] sm:text-[10px] text-amber-500/60 font-mono">{p.credits} CR</span>
               
-              <div className="flex gap-1 sm:gap-2 mt-2 justify-center">
-                {p.hand.map((card, i) => (
-                  <motion.div 
-                    key={card.id} 
+              {/* Hands grow past two cards, so on a phone they fan and overlap
+                  instead of pushing the seat wider than the screen. */}
+              <div className="flex mt-2 justify-center -space-x-5 sm:space-x-0 sm:gap-2">
+                {p.hand.map((card) => (
+                  <motion.div
+                    key={card.id}
                     layoutId={card.id}
                     initial={{ scale: 0, x: 0, y: -50 }}
                     animate={{ scale: 1, x: 0, y: 0 }}
                     transition={{ type: "spring", stiffness: 400, damping: 25, mass: 0.8 }}
-                    className={`w-10 h-14 sm:w-14 sm:h-20 rounded-lg border flex items-center justify-center relative overflow-hidden shadow-[0_0_10px_rgba(0,0,0,0.5)] ${gameState.currentPhase === 'SHOWDOWN' ? 'bg-zinc-800 border-white/20' : 'bg-amber-900/40 border-amber-500/30'}`}
+                    className={`w-8 h-11 sm:w-14 sm:h-20 shrink-0 rounded-lg border flex items-center justify-center relative overflow-hidden shadow-[0_0_10px_rgba(0,0,0,0.5)] ${gameState.currentPhase === 'SHOWDOWN' ? 'bg-zinc-800 border-white/20' : 'bg-amber-900/40 border-amber-500/30'}`}
                   >
                     {gameState.currentPhase === 'SHOWDOWN' ? (
                       <div className="flex flex-col items-center">
@@ -1363,7 +1488,7 @@ export default function SabaccGame() {
                             playSound('click');
                             setShowBuyIn(true);
                           }}
-                          className="px-6 py-2 bg-amber-500 text-black font-bold rounded-full hover:bg-amber-600 transition-all flex items-center gap-2 mx-auto text-sm shadow-lg shadow-amber-500/20"
+                          className="px-6 py-3 sm:py-2 bg-amber-500 text-black font-bold rounded-full hover:bg-amber-600 transition-all flex items-center gap-2 mx-auto text-sm shadow-lg shadow-amber-500/20"
                         >
                           <Coins className="w-4 h-4" /> Request Credits
                         </button>
@@ -1374,7 +1499,7 @@ export default function SabaccGame() {
                           playSound('click');
                           setReady();
                         }}
-                        className="px-6 py-2 bg-amber-500 text-black font-bold rounded-full hover:bg-amber-600 transition-all flex items-center gap-2 mx-auto text-sm"
+                        className="px-6 py-3 sm:py-2 bg-amber-500 text-black font-bold rounded-full hover:bg-amber-600 transition-all flex items-center gap-2 mx-auto text-sm"
                       >
                         <Play className="w-3 h-3" /> Ready
                       </button>
@@ -1386,7 +1511,7 @@ export default function SabaccGame() {
                 
                 <button 
                   onClick={handleJoinGame}
-                  className="px-4 py-1.5 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all text-[10px] uppercase tracking-widest mx-auto mt-2"
+                  className="px-4 py-2.5 sm:py-1.5 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all text-[10px] uppercase tracking-widest mx-auto mt-2"
                 >
                   {me?.isSpectator ? 'Join Game' : 'Sit Out (Spectate)'}
                 </button>
@@ -1401,7 +1526,7 @@ export default function SabaccGame() {
                       playSound('click');
                       addAI();
                     }}
-                    className="px-4 py-1.5 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all text-xs flex items-center gap-2 mx-auto"
+                    className="px-4 py-2.5 sm:py-1.5 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all text-xs flex items-center gap-2 mx-auto"
                   >
                     <User className="w-3 h-3" /> Add AI
                   </button>
@@ -1531,7 +1656,7 @@ export default function SabaccGame() {
       </main>
 
       {/* Controls & Logs */}
-      <footer className="p-4 sm:p-6 border-t border-white/5 bg-black/80 backdrop-blur-xl flex flex-col lg:flex-row gap-4 sm:gap-6 min-h-[16rem] lg:h-64">
+      <footer className="p-3 sm:p-6 border-t border-white/5 bg-black/80 backdrop-blur-xl flex flex-col lg:flex-row gap-3 sm:gap-6 min-h-0 lg:min-h-[16rem] lg:h-64">
         {/* Controls */}
         <div className="flex-1 flex flex-col justify-center gap-3 sm:gap-4">
           {me?.isSpectator ? (
@@ -1544,10 +1669,16 @@ export default function SabaccGame() {
             </div>
           ) : (
             <>
+              {/* Turn order only means something once a hand is running; the
+                  lobby was announcing "Your Turn" with nothing to act on. */}
               <div className="flex items-center gap-4 mb-1 sm:mb-2">
-                <div className={`w-3 h-3 rounded-full ${isMyTurn ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-                <span className={`text-lg sm:text-2xl font-black uppercase tracking-widest ${isMyTurn ? 'text-amber-500 animate-pulse' : 'text-white/40'}`}>
-                  {isMyTurn ? "Your Turn" : `Waiting for ${gameState.players[gameState.turnIndex]?.name}`}
+                <div className={`w-3 h-3 rounded-full ${isMyTurn && isHandInPlay ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+                <span className={`text-base sm:text-2xl font-black uppercase tracking-widest ${isMyTurn && isHandInPlay ? 'text-amber-500 animate-pulse' : 'text-white/40'}`}>
+                  {!isHandInPlay
+                    ? (gameState.currentPhase === 'SHOWDOWN' ? 'Showdown' : 'Waiting for players')
+                    : isMyTurn
+                      ? 'Your Turn'
+                      : `Waiting for ${gameState.players[gameState.turnIndex]?.name}`}
                 </span>
                 {isMyTurn && gameState.currentPhase === 'CARD' && !selectedCardId && (
                   <span className="text-[10px] text-amber-500/60 animate-pulse ml-auto">Select a card to swap</span>
@@ -1560,7 +1691,7 @@ export default function SabaccGame() {
                     <span className="text-red-500 font-bold uppercase tracking-widest text-sm">Out of Credits</span>
                     <button 
                       onClick={() => { playSound('click'); setShowBuyIn(true); }}
-                      className="px-6 py-2 bg-amber-500 text-black font-bold rounded-full hover:bg-amber-600 transition-all uppercase tracking-widest text-xs"
+                      className="px-6 py-3 sm:py-2 bg-amber-500 text-black font-bold rounded-full hover:bg-amber-600 transition-all uppercase tracking-widest text-xs"
                     >
                       Request Credits
                     </button>
@@ -1644,12 +1775,21 @@ export default function SabaccGame() {
           )}
         </div>
 
-        {/* Logs & Chat */}
-        <div className="flex-1 lg:w-96 bg-black/40 border border-white/10 rounded-xl p-3 sm:p-4 flex flex-col gap-2">
-          <div className="flex justify-between items-center">
+        {/* Logs & Chat. Collapsed by default on phones so the table and the
+            action buttons fit one screen; always open from lg upwards. */}
+        <div className="lg:flex-1 lg:w-96 bg-black/40 border border-white/10 rounded-xl p-3 sm:p-4 flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={() => { playSound('click'); setShowLog(v => !v); }}
+            aria-expanded={showLog}
+            className="flex justify-between items-center w-full lg:cursor-default min-h-11 lg:min-h-0"
+          >
             <span className="text-[10px] uppercase tracking-widest text-white/40">Comms Log</span>
-          </div>
-          <div className="flex-1 overflow-y-auto space-y-1 pr-2 custom-scrollbar max-h-32 lg:max-h-none">
+            <span className="text-[10px] uppercase tracking-widest text-amber-500/60 lg:hidden">
+              {showLog ? 'Hide' : `Show (${gameState.logs.length + gameState.messages.length})`}
+            </span>
+          </button>
+          <div className={`${showLog ? 'flex' : 'hidden'} lg:flex flex-1 flex-col overflow-y-auto space-y-1 pr-2 custom-scrollbar max-h-32 lg:max-h-none`}>
             {/* System Logs */}
             {gameState.logs.slice(-10).map((log, i) => (
               <div key={`log-${i}`} className="text-[10px] font-mono text-white/40 leading-tight italic">
@@ -1665,15 +1805,15 @@ export default function SabaccGame() {
             ))}
             <div ref={logsEndRef} />
           </div>
-          <form onSubmit={sendChatMessage} className="mt-2 flex gap-2">
+          <form onSubmit={sendChatMessage} className={`${showLog ? 'flex' : 'hidden'} lg:flex mt-2 gap-2`}>
             <input 
               type="text" 
               value={chatMessage}
               onChange={(e) => setChatMessage(e.target.value)}
               placeholder="Type message..."
-              className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-amber-500/50 transition-colors"
+              className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-2.5 sm:py-1.5 text-base sm:text-xs focus:outline-none focus:border-amber-500/50 transition-colors"
             />
-            <button type="submit" className="p-1.5 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-500 hover:bg-amber-500 hover:text-black transition-all">
+            <button type="submit" className="p-1.5 min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 inline-flex items-center justify-center bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-500 hover:bg-amber-500 hover:text-black transition-all">
               <Play className="w-3 h-3" />
             </button>
           </form>
