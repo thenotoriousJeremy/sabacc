@@ -1,10 +1,10 @@
 # Corellian Spike Sabacc
 
-[![GHCR](https://img.shields.io/badge/GHCR-ghcr.io/thenotoriousjeremy/sabacc-blue)](https://github.com/thenotoriousjeremy/corellian-spike-sabacc/pkgs/container/sabacc)
+[![GHCR](https://img.shields.io/badge/GHCR-ghcr.io/thenotoriousjeremy/sabacc-blue)](https://github.com/thenotoriousjeremy/sabacc/pkgs/container/sabacc)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/thenotoriousjeremy/corellian-spike-sabacc/ci.yml)](https://github.com/thenotoriousjeremy/corellian-spike-sabacc/actions)
-[![GitHub Stars](https://img.shields.io/github/stars/thenotoriousjeremy/corellian-spike-sabacc)](https://github.com/thenotoriousjeremy/corellian-spike-sabacc/stargazers)
-[![GitHub Issues](https://img.shields.io/github/issues/thenotoriousjeremy/corellian-spike-sabacc)](https://github.com/thenotoriousjeremy/corellian-spike-sabacc/issues)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/thenotoriousjeremy/sabacc/ci.yml)](https://github.com/thenotoriousjeremy/sabacc/actions)
+[![GitHub Stars](https://img.shields.io/github/stars/thenotoriousjeremy/sabacc)](https://github.com/thenotoriousjeremy/sabacc/stargazers)
+[![GitHub Issues](https://img.shields.io/github/issues/thenotoriousjeremy/sabacc)](https://github.com/thenotoriousjeremy/sabacc/issues)
 
 A multiplayer web-based version of the 'Corellian Spike' Sabacc game from Star Wars Legends. Experience the thrill of this classic card game with real-time multiplayer gameplay, featuring Sabacc Shifts, betting phases, and a Star Wars aesthetic.
 
@@ -24,7 +24,33 @@ A multiplayer web-based version of the 'Corellian Spike' Sabacc game from Star W
 
 ## Installation
 
-Corellian Spike Sabacc can be installed using Docker, Docker Compose, or manually. Docker is the recommended method for production deployments.
+Corellian Spike Sabacc can be installed from a release binary, using Docker,
+Docker Compose, or manually. A release binary is the easiest way to host a game
+for friends; Docker is recommended for a long-running public deployment.
+
+### Release binary (no Node required)
+
+1. Download the host archive for your platform from
+   [Releases](https://github.com/thenotoriousjeremy/sabacc/releases).
+2. Unpack it, keeping `sabacc-host` and the `web` folder together.
+3. Run `sabacc-host`. It prints the addresses it is reachable on:
+
+   ```
+   > Ready on http://localhost:3000
+   > On your network: http://192.168.1.8:3000
+   ```
+
+4. Share the network address with your friends, then create a table and read
+   them the room code.
+
+### Android client
+
+The APK is a **client only** — someone still has to host, using a binary,
+Docker, or `npm start`. Install `sabacc-android.apk` from the same release, then
+enter the host address the server printed followed by the room code.
+
+The APK is debug-signed, so Android will warn about installing from an unknown
+source.
 
 ### Docker
 
@@ -92,8 +118,8 @@ If you prefer to run the application directly on your system:
 
 2. Clone the repository:
    ```bash
-   git clone https://github.com/thenotoriousjeremy/corellian-spike-sabacc.git
-   cd corellian-spike-sabacc
+   git clone https://github.com/thenotoriousjeremy/sabacc.git
+   cd sabacc
    ```
 
 3. Install dependencies:
@@ -121,12 +147,20 @@ The application uses the following environment variables:
 - `NODE_ENV`: Set to `production` for production builds
 - `PORT`: Port to run the server on (default: 3000)
 - `TZ`: Timezone (default: Etc/UTC)
+- `ALLOWED_ORIGINS`: Comma-separated origin allowlist for Socket.IO. Leave unset
+  for LAN play, which permits loopback, private network ranges, and the packaged
+  clients. **Set this when exposing the server to the internet** — only the
+  listed origins may then connect.
+- `STATIC_DIR`: Serve a prebuilt static bundle from this directory instead of
+  running Next.js. Used by the packaged host binary.
 
 ## Usage
 
 1. Open your web browser and navigate to `http://localhost:3000`.
-2. Enter your player name and a room ID.
-3. Set your starting credits.
+2. Enter your player name.
+3. Click **Start a New Table** to get a room code, or enter a code you were
+   given and click **Enter Cantina**. Room codes are 5 characters, issued by the
+   server, and shown in the middle of the table — click them to copy.
 4. Wait for other players to join and mark themselves as ready.
 5. Play through the three phases of each round:
    - **Card Phase**: Draw, swap, or stand.
@@ -189,6 +223,33 @@ True Tie
 - **Sabacc Winner**: Gets the Sabacc Pot if they win
 
 For more details, see [How to Play - Sabacc](https://hyperspaceprops.com/how-to-play-corellian-spike/).
+
+## Reconnecting
+
+Seats belong to a session token the server issues on join, not to your name or
+your connection. If you refresh or drop out, you rejoin the same seat with your
+credits and hand intact — the tab remembers the table and reclaims it
+automatically. Seats are held for 60 seconds; dropping mid-hand folds you so the
+table is not left waiting.
+
+Because the token is per-tab, two tabs on one machine are two different players.
+
+## Development
+
+```bash
+npm run dev          # Next dev server + Socket.IO on :3000
+npm run typecheck    # tsc --noEmit
+npm run lint
+npm test             # game logic tests
+npm run build:host   # static export + standalone host binary into dist/
+npm run build:apk    # static export + Android APK (needs a JDK and Android SDK)
+```
+
+`npm run build:host` uses Node's single-executable support, which cannot
+cross-compile: it produces a binary for the machine it runs on. CI builds all
+three platforms on their own runners.
+
+The `android/` project is generated by `npm run build:apk` rather than committed.
 
 ## Contributing
 

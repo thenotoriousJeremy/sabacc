@@ -40,6 +40,92 @@ const SuitIcon = ({ suit, className }: { suit: CardSuit, className?: string }) =
   }
 };
 
+interface StoredSession {
+  token: string;
+  playerId: string;
+  roomId: string;
+}
+
+// Seat identity is a server-issued token kept per room. sessionStorage rather
+// than localStorage so two tabs on one machine are two different players.
+const sessionKey = (roomId: string) => `sabacc:session:${roomId.toUpperCase()}`;
+
+function loadSession(roomId: string): StoredSession | null {
+  if (typeof window === 'undefined' || !roomId) return null;
+  try {
+    const raw = window.sessionStorage.getItem(sessionKey(roomId));
+    return raw ? (JSON.parse(raw) as StoredSession) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveSession(session: StoredSession) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(sessionKey(session.roomId), JSON.stringify(session));
+  } catch {
+    // Private browsing with storage disabled: reconnect degrades to a new seat.
+  }
+}
+
+// Remembering the table is what makes a refresh land back at the game instead
+// of the join screen; the token then reclaims the seat.
+const LAST_TABLE_KEY = 'sabacc:lastTable';
+
+interface LastTable {
+  roomId: string;
+  playerName: string;
+  isSpectator: boolean;
+}
+
+function loadLastTable(): LastTable | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(LAST_TABLE_KEY);
+    if (!raw) return null;
+    const table = JSON.parse(raw) as LastTable;
+    // Only worth restoring if the seat token for it survived too.
+    return table.roomId && loadSession(table.roomId) ? table : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLastTable(table: LastTable) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(LAST_TABLE_KEY, JSON.stringify(table));
+  } catch {
+    // Non-fatal: refresh falls back to the join screen.
+  }
+}
+
+function clearLastTable() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.removeItem(LAST_TABLE_KEY);
+  } catch {
+    // Ignore.
+  }
+}
+
+// Served from the host in browser play, so same-origin is right. The packaged
+// desktop and Android clients have no host of their own and set one of these.
+const HOST_STORAGE_KEY = 'sabacc:serverUrl';
+
+function getServerUrl(): string | undefined {
+  if (process.env.NEXT_PUBLIC_SERVER_URL) return process.env.NEXT_PUBLIC_SERVER_URL;
+  if (typeof window === 'undefined') return undefined;
+  return window.localStorage.getItem(HOST_STORAGE_KEY) || undefined;
+}
+
+// Build-time only, so it is stable between server render and hydration.
+// The Android bundle is built with NEXT_PUBLIC_REQUIRE_HOST=true; a browser
+// loading the page from a host never needs to be asked where that host is.
+const REQUIRES_HOST_ADDRESS =
+  !process.env.NEXT_PUBLIC_SERVER_URL && process.env.NEXT_PUBLIC_REQUIRE_HOST === 'true';
+
 export default function SabaccGame() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
@@ -60,6 +146,25 @@ export default function SabaccGame() {
   const [buyInAmount, setBuyInAmount] = useState<number>(1000);
   const [isEditingCredits, setIsEditingCredits] = useState(false);
   const [newCreditsAmount, setNewCreditsAmount] = useState(0);
+  const [myPlayerId, setMyPlayerId] = useState<string | null>(null);
+  const [serverUrl, setServerUrl] = useState('');
+  const needsServerUrl = REQUIRES_HOST_ADDRESS;
+
+  // Deferred so hydration matches the prerendered HTML, which has no access to
+  // stored values. Restores the previous table so a refresh rejoins the game.
+  useEffect(() => {
+    const stored = window.localStorage.getItem(HOST_STORAGE_KEY);
+    const table = loadLastTable();
+    Promise.resolve().then(() => {
+      if (stored) setServerUrl(stored);
+      if (table) {
+        setPlayerName(table.playerName);
+        setRoomId(table.roomId);
+        setIsSpectator(table.isSpectator);
+        setIsJoined(true);
+      }
+    });
+  }, []);
 
   // Web Audio Context for synthesized sounds
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -249,6 +354,9 @@ export default function SabaccGame() {
   }, []);
 
   const leaveRoom = () => {
+    // Deliberately leaving must not be undone by the refresh-rejoin path.
+    clearLastTable();
+    setMyPlayerId(null);
     socket?.disconnect();
     setGameState(null);
     setSocket(null);
@@ -282,17 +390,30 @@ export default function SabaccGame() {
 
     if (socketRef.current) return;
 
-    const newSocket = io();
+    const newSocket = io(getServerUrl());
     socketRef.current = newSocket;
-    
+
     newSocket.on('connect', () => {
       setSocket(newSocket);
-      // Re-join if we were already in a room (e.g. after a manual reconnect)
-      newSocket.emit('joinRoom', { 
-        roomId: roomIdRef.current, 
-        playerName: playerNameRef.current, 
+      // Re-join on every connect, including automatic reconnects. The stored
+      // token is what reclaims the seat; without it the server issues a new one.
+      newSocket.emit('joinRoom', {
+        roomId: roomIdRef.current,
+        playerName: playerNameRef.current,
+        isSpectator: isSpectatorRef.current,
+        token: loadSession(roomIdRef.current)?.token
+      });
+    });
+
+    // The server owns identity. It tells us our token and our player id.
+    newSocket.on('session', (session: StoredSession) => {
+      saveSession(session);
+      saveLastTable({
+        roomId: session.roomId,
+        playerName: playerNameRef.current,
         isSpectator: isSpectatorRef.current
       });
+      setMyPlayerId(session.playerId);
     });
 
     newSocket.on('gameStateUpdate', (state: GameState) => {
@@ -349,27 +470,46 @@ export default function SabaccGame() {
 
   const joinRoom = () => {
     if (!playerName || !roomId) return;
-    socket?.emit('joinRoom', { roomId, playerName, isSpectator });
+    // The connect handler does the actual joinRoom emit, so it carries the
+    // stored token on both first join and reconnect.
     setIsJoined(true);
+  };
+
+  // Rooms are created by the server so the code is unambiguous and unused.
+  const createRoom = () => {
+    if (!playerName) return;
+    const lobby = io(getServerUrl());
+    lobby.on('roomCreated', ({ roomId: code }: { roomId: string }) => {
+      lobby.close();
+      setRoomId(code);
+      roomIdRef.current = code;
+      setIsJoined(true);
+    });
+    lobby.on('connect_error', () => {
+      lobby.close();
+      setErrorMessage('Could not reach the server.');
+      setTimeout(() => setErrorMessage(null), 5000);
+    });
+    lobby.emit('createRoom');
   };
 
   const handleUpdateCredits = () => {
     if (socket && newCreditsAmount >= 0) {
-      socket.emit('updateCredits', { roomId, credits: newCreditsAmount });
+      socket.emit('updateCredits', { credits: newCreditsAmount });
     }
     setIsEditingCredits(false);
   };
 
   const setReady = () => {
-    socket?.emit('ready', { roomId });
+    socket?.emit('ready', {});
   };
 
   const toggleSpectator = () => {
-    socket?.emit('toggleSpectator', { roomId });
+    socket?.emit('toggleSpectator', {});
   };
 
   const addAI = () => {
-    socket?.emit('addAI', { roomId });
+    socket?.emit('addAI', {});
   };
 
   const handleJoinGame = () => {
@@ -382,7 +522,7 @@ export default function SabaccGame() {
   };
 
   const removeAI = (aiId: string) => {
-    socket?.emit('removeAI', { roomId, aiId });
+    socket?.emit('removeAI', { aiId });
   };
 
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
@@ -396,18 +536,18 @@ export default function SabaccGame() {
   }, [gameState?.players, isRollingDice]);
 
   const cardAction = (action: 'draw' | 'swap_deck' | 'swap_discard' | 'stand', cardId?: string) => {
-    socket?.emit('cardAction', { roomId, action, cardId });
+    socket?.emit('cardAction', { action, cardId });
     setSelectedCardId(null);
   };
 
   const betAction = (action: 'call' | 'raise' | 'fold' | 'check' | 'bet' | 'all_in', amount?: string) => {
-    socket?.emit('betAction', { roomId, action, amount });
+    socket?.emit('betAction', { action, amount });
   };
 
   const sendChatMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatMessage.trim()) return;
-    socket?.emit('chatMessage', { roomId, text: chatMessage });
+    socket?.emit('chatMessage', { text: chatMessage });
     setChatMessage('');
   };
 
@@ -452,18 +592,47 @@ export default function SabaccGame() {
                 />
               </div>
             </div>
+            {needsServerUrl && (
+              <div>
+                <label className="block text-xs uppercase tracking-widest text-amber-500/60 mb-2">Host Address</label>
+                <div className="relative">
+                  <Hash className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-amber-500/40" />
+                  <input
+                    type="url"
+                    inputMode="url"
+                    value={serverUrl}
+                    onChange={(e) => setServerUrl(e.target.value)}
+                    onBlur={() => {
+                      const trimmed = serverUrl.trim();
+                      if (trimmed) window.localStorage.setItem(HOST_STORAGE_KEY, trimmed);
+                    }}
+                    className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 focus:outline-none focus:border-amber-500 transition-colors"
+                    placeholder="http://192.168.1.100:3000"
+                  />
+                </div>
+                <p className="mt-2 text-[10px] uppercase tracking-widest text-white/40">
+                  Address of the machine hosting the game
+                </p>
+              </div>
+            )}
             <div>
-              <label className="block text-xs uppercase tracking-widest text-amber-500/60 mb-2">Sector ID (Room)</label>
+              <label className="block text-xs uppercase tracking-widest text-amber-500/60 mb-2">Sector ID (Room Code)</label>
               <div className="relative">
                 <Hash className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-amber-500/40" />
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   value={roomId}
-                  onChange={(e) => setRoomId(e.target.value)}
-                  className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 focus:outline-none focus:border-amber-500 transition-colors"
-                  placeholder="CORELLIA-1"
+                  onChange={(e) => setRoomId(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6))}
+                  className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 focus:outline-none focus:border-amber-500 transition-colors tracking-[0.3em] font-mono"
+                  placeholder="XKQ7P"
+                  autoCapitalize="characters"
+                  autoComplete="off"
+                  spellCheck={false}
                 />
               </div>
+              <p className="mt-2 text-[10px] uppercase tracking-widest text-white/40">
+                Have a code? Enter it. Otherwise start a new table below.
+              </p>
             </div>
             <div className="flex gap-2">
               <button 
@@ -481,15 +650,30 @@ export default function SabaccGame() {
                 </span>
               </button>
             </div>
-            <button 
+            {errorMessage && (
+              <p className="text-xs text-red-400 text-center" role="alert">{errorMessage}</p>
+            )}
+            <button
               onClick={() => {
                 initAudio();
                 playSound('chips');
                 joinRoom();
               }}
-              className="w-full bg-amber-500 hover:bg-amber-600 text-black font-bold py-4 rounded-lg transition-all transform active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest"
+              disabled={!playerName.trim() || roomId.length < 4}
+              className="w-full bg-amber-500 hover:bg-amber-600 disabled:bg-white/10 disabled:text-white/30 text-black font-bold py-4 rounded-lg transition-all transform active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest"
             >
               Enter Cantina <ArrowRight className="w-5 h-5" />
+            </button>
+            <button
+              onClick={() => {
+                initAudio();
+                playSound('chips');
+                createRoom();
+              }}
+              disabled={!playerName.trim()}
+              className="w-full border border-amber-500/40 hover:border-amber-500 disabled:border-white/10 disabled:text-white/30 text-amber-500 font-bold py-3 rounded-lg transition-all transform active:scale-95 uppercase tracking-widest text-xs"
+            >
+              Start a New Table
             </button>
           </div>
         </div>
@@ -499,9 +683,9 @@ export default function SabaccGame() {
 
   if (!gameState) return <div className="min-h-screen bg-black flex items-center justify-center text-amber-500">Connecting to Holonet...</div>;
 
-  const me = gameState.players.find(p => p.id === socket?.id);
-  const isMyTurn = gameState.players[gameState.turnIndex]?.id === socket?.id;
-  const myDisplayedPlayer = displayedPlayers.find(p => p.id === socket?.id);
+  const me = gameState.players.find(p => p.id === myPlayerId);
+  const isMyTurn = gameState.players[gameState.turnIndex]?.id === myPlayerId;
+  const myDisplayedPlayer = displayedPlayers.find(p => p.id === myPlayerId);
 
   return (
     <div className="min-h-screen bg-[#050505] text-white font-sans overflow-hidden flex flex-col">
@@ -686,7 +870,7 @@ export default function SabaccGame() {
                   <button 
                     onClick={() => {
                       playSound('click');
-                      socket?.emit('toggleSpectator', { roomId: gameState.roomId });
+                      socket?.emit('toggleSpectator', {});
                       setShowSettings(false);
                     }}
                     className={`w-full py-3 rounded-xl border transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-[10px] font-bold ${me?.isSpectator ? 'bg-amber-500 text-black border-amber-500' : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'}`}
@@ -780,7 +964,7 @@ export default function SabaccGame() {
                 <button 
                   onClick={() => {
                     playSound('chips');
-                    socket?.emit('addCredits', { roomId: gameState.roomId, amount: buyInAmount });
+                    socket?.emit('addCredits', { amount: buyInAmount });
                     setShowBuyIn(false);
                   }}
                   className="w-full py-3 bg-amber-500 text-black font-bold rounded-xl hover:bg-amber-600 transition-all uppercase tracking-widest text-sm"
@@ -958,7 +1142,7 @@ export default function SabaccGame() {
             <button 
               onClick={() => {
                 playSound('click');
-                socket?.emit('toggleSpectator', { roomId: gameState.roomId });
+                socket?.emit('toggleSpectator', {});
               }}
               className="px-4 py-2 bg-amber-500 text-black font-bold rounded-lg text-[10px] uppercase tracking-widest hover:bg-amber-600 transition-all"
             >
@@ -1057,6 +1241,24 @@ export default function SabaccGame() {
 
               {/* Central Pots */}
               <div className="flex flex-col items-center gap-2 px-6 py-3 bg-black/40 rounded-2xl border border-white/5 backdrop-blur-sm">
+                {/* The code is server-generated, so this is the only place the
+                    host can read it off to share. */}
+                <button
+                  onClick={() => {
+                    navigator.clipboard?.writeText(gameState.roomId);
+                    playSound('click');
+                    setErrorMessage(`Room code ${gameState.roomId} copied`);
+                    setTimeout(() => setErrorMessage(null), 2500);
+                  }}
+                  title="Copy room code"
+                  className="flex flex-col items-center group"
+                >
+                  <span className="text-[8px] sm:text-[10px] uppercase tracking-[0.2em] text-white/30">Room Code</span>
+                  <span className="text-lg sm:text-xl font-mono text-amber-400 font-bold tracking-[0.25em] group-hover:text-amber-300">
+                    {gameState.roomId}
+                  </span>
+                </button>
+                <div className="w-8 h-px bg-white/10" />
                 <div className="flex flex-col items-center">
                   <span className="text-[8px] sm:text-[10px] uppercase tracking-[0.2em] text-white/30">Main Pot</span>
                   <span className="text-xl sm:text-2xl font-mono text-amber-500 font-bold">{gameState.handPot}</span>

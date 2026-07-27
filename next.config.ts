@@ -19,7 +19,10 @@ const nextConfig: NextConfig = {
       },
     ],
   },
-  output: 'standalone',
+  // The packaged desktop host and the Android client ship a static bundle with
+  // no Next runtime; the Docker image keeps using the standalone server.
+  output: process.env.STATIC_EXPORT === 'true' ? 'export' : 'standalone',
+  ...(process.env.STATIC_EXPORT === 'true' ? {images: {unoptimized: true}} : {}),
   transpilePackages: ['motion'],
   webpack: (config, {dev}) => {
     // HMR is disabled in AI Studio via DISABLE_HMR env var.
