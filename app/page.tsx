@@ -17,9 +17,6 @@ import {
   ChevronLeft,
   Trophy,
   X,
-  Circle as CircleIcon,
-  Square as SquareIcon,
-  Triangle as TriangleIcon,
   HelpCircle,
   Settings,
   Volume2,
@@ -29,16 +26,8 @@ import {
   PinOff,
   Lock
 } from 'lucide-react';
-import { GameState, Player, Card, CardType, evaluateHand, CardSuit } from '@/lib/game-logic';
-
-const SuitIcon = ({ suit, className }: { suit: CardSuit, className?: string }) => {
-  switch (suit) {
-    case CardSuit.CIRCLE: return <CircleIcon className={className} />;
-    case CardSuit.SQUARE: return <SquareIcon className={className} />;
-    case CardSuit.TRIANGLE: return <TriangleIcon className={className} />;
-    default: return null;
-  }
-};
+import { GameState, Player, Card, CardType, evaluateHand } from '@/lib/game-logic';
+import { SabaccCard } from '@/app/components/sabacc-card';
 
 interface StoredSession {
   token: string;
@@ -1316,18 +1305,14 @@ export default function SabaccGame() {
                     initial={{ scale: 0, x: 0, y: -50 }}
                     animate={{ scale: 1, x: 0, y: 0 }}
                     transition={{ type: "spring", stiffness: 400, damping: 25, mass: 0.8 }}
-                    className={`w-8 h-11 sm:w-14 sm:h-20 shrink-0 rounded-lg border flex items-center justify-center relative overflow-hidden shadow-[0_0_10px_rgba(0,0,0,0.5)] ${gameState.currentPhase === 'SHOWDOWN' ? 'bg-zinc-800 border-white/20' : 'bg-amber-900/40 border-amber-500/30'}`}
+                    className="shrink-0 w-8 h-11 text-[26px] sm:w-14 sm:h-20 sm:text-[40px]"
                   >
-                    {gameState.currentPhase === 'SHOWDOWN' ? (
-                      <div className="flex flex-col items-center">
-                        <span className={`text-[10px] sm:text-sm font-bold font-mono ${card.type === CardType.POSITIVE ? 'text-blue-400' : card.type === CardType.NEGATIVE ? 'text-red-400' : 'text-amber-400'}`}>
-                          {card.value}
-                        </span>
-                        <SuitIcon suit={card.suit} className="w-2 h-2 sm:w-3 sm:h-3 opacity-40" />
-                      </div>
-                    ) : (
-                      <div className="w-full h-full bg-[repeating-linear-gradient(45deg,transparent,transparent_2px,rgba(245,158,11,0.1)_2px,rgba(245,158,11,0.1)_4px)]" />
-                    )}
+                    <SabaccCard
+                      card={card}
+                      faceDown={gameState.currentPhase !== 'SHOWDOWN'}
+                      detail="numeral"
+                      className="w-full h-full"
+                    />
                   </motion.div>
                 ))}
               </div>
@@ -1357,10 +1342,8 @@ export default function SabaccGame() {
               <div className="flex flex-col items-center gap-1">
                 <span className="text-[10px] uppercase tracking-widest text-white/20">Draw</span>
                 <div className="relative">
-                  <div className="w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 bg-amber-900/20 border-amber-500/30 shadow-xl flex items-center justify-center overflow-hidden">
-                    <div className="w-full h-full bg-[repeating-linear-gradient(45deg,transparent,transparent_2px,rgba(245,158,11,0.05)_2px,rgba(245,158,11,0.05)_4px)]" />
-                  </div>
-                  <div className="absolute -top-1 -right-1 w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 bg-amber-900/20 border-amber-500/30 -z-10" />
+                  <SabaccCard faceDown className="w-16 h-24 sm:w-20 sm:h-28" />
+                  <div className="absolute -top-1 -right-1 -z-10 w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 border-amber-600/30 bg-[#0c0a08]" />
                 </div>
               </div>
 
@@ -1399,11 +1382,10 @@ export default function SabaccGame() {
               <div className="flex flex-col items-center gap-1">
                 <span className="text-[10px] uppercase tracking-widest text-white/20">Discard</span>
                 {gameState.discardPile.length > 0 ? (
-                  <div className={`w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 flex flex-col items-center justify-center relative shadow-xl bg-zinc-900 border-white/20`}>
-                    <span className={`text-2xl sm:text-3xl font-bold font-mono ${gameState.discardPile[gameState.discardPile.length-1].type === CardType.POSITIVE ? 'text-blue-400' : gameState.discardPile[gameState.discardPile.length-1].type === CardType.NEGATIVE ? 'text-red-400' : 'text-amber-400'}`}>
-                      {gameState.discardPile[gameState.discardPile.length-1].value}
-                    </span>
-                  </div>
+                  <SabaccCard
+                    card={gameState.discardPile[gameState.discardPile.length - 1]}
+                    className="w-16 h-24 text-[44px] sm:w-20 sm:h-28 sm:text-[52px]"
+                  />
                 ) : (
                   <div className="w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 border-dashed border-white/10 flex items-center justify-center">
                     <span className="text-[8px] uppercase tracking-widest text-white/10">Empty</span>
@@ -1606,30 +1588,15 @@ export default function SabaccGame() {
                     mass: 0.8,
                     delay: i * 0.03 
                   }}
-                  onClick={() => isMyTurn && gameState.currentPhase === 'CARD' && setSelectedCardId(card.id === selectedCardId ? null : card.id)}
-                  className={`w-14 h-20 sm:w-20 sm:h-28 rounded-lg border-2 flex flex-col items-center justify-center relative shadow-xl cursor-pointer transition-all group ${
-                    selectedCardId === card.id ? 'ring-2 ring-amber-500 ring-offset-2 ring-offset-black border-amber-500' : ''
-                  } ${
-                    card.type === CardType.POSITIVE ? 'bg-blue-900/20 border-blue-500/30 text-blue-400 hover:border-blue-400' :
-                    card.type === CardType.NEGATIVE ? 'bg-red-900/20 border-red-500/30 text-red-400 hover:border-red-400' :
-                    'bg-amber-900/20 border-amber-500/30 text-amber-400 hover:border-amber-400'
-                  }`}
+                  className="relative shrink-0 w-14 h-20 text-[40px] sm:w-20 sm:h-28 sm:text-[52px]"
                 >
-                  <div className="absolute top-1 left-1 flex flex-col items-center gap-0 opacity-40 group-hover:opacity-100 transition-opacity">
-                    <SuitIcon suit={card.suit} className="w-2 h-2" />
-                    <span className="text-[6px] sm:text-[8px] font-mono font-bold leading-none">{card.value}</span>
-                  </div>
-                  
-                  <div className="flex flex-col items-center gap-0.5">
-                    <span className="text-lg sm:text-2xl font-bold font-mono tracking-tighter">{card.value}</span>
-                    <SuitIcon suit={card.suit} className="w-4 h-4 sm:w-5 sm:h-5 opacity-20" />
-                  </div>
+                  <SabaccCard
+                    card={card}
+                    selected={selectedCardId === card.id}
+                    onClick={() => isMyTurn && gameState.currentPhase === 'CARD' && setSelectedCardId(card.id === selectedCardId ? null : card.id)}
+                    className="w-full h-full"
+                  />
 
-                  <div className="absolute bottom-1 right-1 flex flex-col items-center gap-0 opacity-40 group-hover:opacity-100 transition-opacity rotate-180">
-                    <SuitIcon suit={card.suit} className="w-2 h-2" />
-                    <span className="text-[6px] sm:text-[8px] font-mono font-bold leading-none">{card.value}</span>
-                  </div>
-                  
                   {/* Dealer Button */}
                   {gameState.players[gameState.dealerIndex]?.id === myDisplayedPlayer?.id && i === 0 && (
                     <div className="absolute -top-2 -right-2 w-5 h-5 bg-amber-500 rounded-full border border-black flex items-center justify-center shadow-lg z-10" title="Dealer">
