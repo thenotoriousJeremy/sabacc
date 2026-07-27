@@ -79,6 +79,14 @@ const MAX_BUY_IN = 100_000;
 const MAX_PLAYERS_PER_ROOM = 6;
 // Long enough to survive a page refresh, a tunnel change, or a phone locking.
 const ROOM_GRACE_PERIOD_MS = 60_000;
+// A room nobody joins is reaped; the client creates then joins within a second.
+const EMPTY_ROOM_TTL_MS = 120_000;
+const MAX_ROOMS = 500;
+
+// Token bucket per socket. Sized so ordinary play never trips it, while a
+// scripted client cannot spam room creation, chat, or bot adds.
+const RATE_BURST = 40;
+const RATE_REFILL_PER_SEC = 12;
 
 function sanitizeName(raw: unknown, fallback: string): string {
   // Strip control characters so names cannot break the log or chat rendering.
@@ -120,6 +128,31 @@ async function bootstrap() {
   const sessionsBySocket = new Map<string, Session>();
   // Seats vacated in the lobby are held briefly so a refresh does not lose them.
   const pendingRemoval = new Map<string, NodeJS.Timeout>();
+  // Every timer that captures a room is tracked, so destroying the room cannot
+  // leave a callback firing into a deleted game.
+  const roomTimers = new Map<string, Set<NodeJS.Timeout>>();
+
+  function laterInRoom(roomId: string, fn: () => void, ms: number) {
+    const handle = setTimeout(() => {
+      roomTimers.get(roomId)?.delete(handle);
+      if (!games[roomId]) return;
+      fn();
+    }, ms);
+    const timers = roomTimers.get(roomId) ?? new Set<NodeJS.Timeout>();
+    timers.add(handle);
+    roomTimers.set(roomId, timers);
+    return handle;
+  }
+
+  function destroyRoom(roomId: string) {
+    for (const handle of roomTimers.get(roomId) ?? []) clearTimeout(handle);
+    roomTimers.delete(roomId);
+    for (const [token, session] of sessionsByToken) {
+      if (session.roomId === roomId) sessionsByToken.delete(token);
+    }
+    delete games[roomId];
+    console.log(`Cleaned up room: ${roomId}`);
+  }
 
   function generateRoomCode(): string {
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -160,10 +193,49 @@ async function bootstrap() {
     return contenders.length >= 2 && present.every(p => p.isReady);
   }
 
+  const rateBuckets = new Map<string, { tokens: number; last: number }>();
+
+  function withinRateLimit(socketId: string): boolean {
+    const now = Date.now();
+    const bucket = rateBuckets.get(socketId) ?? { tokens: RATE_BURST, last: now };
+    bucket.tokens = Math.min(RATE_BURST, bucket.tokens + ((now - bucket.last) / 1000) * RATE_REFILL_PER_SEC);
+    bucket.last = now;
+    const allowed = bucket.tokens >= 1;
+    if (allowed) bucket.tokens -= 1;
+    rateBuckets.set(socketId, bucket);
+    return allowed;
+  }
+
   io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
+    // One gate for every event, rather than a guard bolted onto each handler.
+    // socket.io does not forward middleware errors to the client, so the notice
+    // is sent explicitly - throttled, so telling them off cannot itself become
+    // the amplification.
+    let lastRateNotice = 0;
+    socket.use((_event, next) => {
+      if (!withinRateLimit(socket.id)) {
+        const now = Date.now();
+        if (now - lastRateNotice > 1000) {
+          lastRateNotice = now;
+          socket.emit('error', 'Too many actions. Slow down.');
+        }
+        next(new Error('rate limited'));
+        return;
+      }
+      next();
+    });
+
     socket.on('createRoom', () => {
+      // A room is created before anyone is in it, so nothing in the disconnect
+      // path can ever reap it. Without a cap and a reaper, createRoom is an
+      // unbounded allocation any client can drive.
+      if (Object.keys(games).length >= MAX_ROOMS) {
+        socket.emit('joinRejected', { reason: 'The server is at capacity. Try again shortly.' });
+        return;
+      }
+
       const roomId = generateRoomCode();
       games[roomId] = {
         roomId,
@@ -183,6 +255,10 @@ async function bootstrap() {
         logs: [`Room ${roomId} created.`],
         messages: []
       };
+      // Reaped if nobody ever joins, e.g. the tab closed between create and join.
+      laterInRoom(roomId, () => {
+        if (games[roomId] && games[roomId].players.length === 0) destroyRoom(roomId);
+      }, EMPTY_ROOM_TTL_MS);
       socket.emit('roomCreated', { roomId });
     });
 
@@ -548,6 +624,7 @@ async function bootstrap() {
     socket.on('disconnect', () => {
       console.log('User disconnected:', socket.id);
 
+      rateBuckets.delete(socket.id);
       const session = sessionsBySocket.get(socket.id);
       sessionsBySocket.delete(socket.id);
       if (!session) return;
@@ -593,15 +670,9 @@ async function bootstrap() {
       // that a refresh does not destroy the room.
       const liveHumans = game.players.filter(p => !p.isAI && p.isConnected);
       if (liveHumans.length === 0) {
-        setTimeout(() => {
-          const current = games[roomId];
-          if (!current) return;
-          if (current.players.some(p => !p.isAI && p.isConnected)) return;
-          console.log(`Cleaning up empty room: ${roomId}`);
-          for (const [token, s] of sessionsByToken) {
-            if (s.roomId === roomId) sessionsByToken.delete(token);
-          }
-          delete games[roomId];
+        laterInRoom(roomId, () => {
+          if (games[roomId].players.some(p => !p.isAI && p.isConnected)) return;
+          destroyRoom(roomId);
         }, ROOM_GRACE_PERIOD_MS);
       }
 
@@ -666,7 +737,7 @@ async function bootstrap() {
   function checkAndProcessAITurn(game: GameState) {
     const currentPlayer = game.players[game.turnIndex];
     if (currentPlayer && currentPlayer.isAI && !currentPlayer.isFolded && (game.currentPhase === 'CARD' || game.currentPhase === 'BETTING')) {
-      setTimeout(() => {
+      laterInRoom(game.roomId, () => {
         processAITurn(game);
       }, 1500); // Delay for realism
     }
@@ -911,7 +982,7 @@ async function bootstrap() {
     // Stay in DICE phase for 3 seconds so players can see the result
     io.to(game.roomId).emit('gameStateUpdate', game);
 
-    setTimeout(() => {
+    laterInRoom(game.roomId, () => {
       if (game.currentRound < 3) {
         game.currentRound++;
         game.currentPhase = 'CARD';
@@ -979,13 +1050,18 @@ async function bootstrap() {
     });
     io.to(game.roomId).emit('gameStateUpdate', game);
 
-    setTimeout(() => {
+    laterInRoom(game.roomId, () => {
       if (game.currentPhase === 'SHOWDOWN') {
         game.currentPhase = 'JOINING';
         io.to(game.roomId).emit('gameStateUpdate', game);
       }
     }, 10000); // 10 second delay for players to see results
   }
+
+  // Liveness for containers and uptime checks. Declared before the catch-all.
+  expressApp.get('/healthz', (_req, res) => {
+    res.json({ ok: true, rooms: Object.keys(games).length, uptime: Math.round(process.uptime()) });
+  });
 
   if (staticDir) {
     expressApp.use(express.static(staticDir));
