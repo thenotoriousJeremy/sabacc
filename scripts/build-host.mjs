@@ -3,7 +3,7 @@
 //
 // SEA cannot cross-compile, so this must run once per target OS. CI does that
 // with a matrix; locally it produces a binary for the machine you run it on.
-import { build } from 'esbuild';
+import { bundleServer } from './bundle-server.mjs';
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, rmSync, writeFileSync, cpSync, existsSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
@@ -22,23 +22,7 @@ rmSync(DIST, { recursive: true, force: true });
 mkdirSync(DIST, { recursive: true });
 
 console.log('> bundling server');
-await build({
-  entryPoints: ['server.ts'],
-  outfile: BUNDLE,
-  bundle: true,
-  platform: 'node',
-  target: 'node20',
-  format: 'cjs',
-  // `next` is only reachable on the dev code path, which the binary never takes.
-  // The ws extras are optional native speedups that ws already require()s safely.
-  external: ['next', 'bufferutil', 'utf-8-validate'],
-  define: {
-    'process.env.SABACC_PACKAGED': '"true"',
-    'process.env.NODE_ENV': '"production"',
-  },
-  legalComments: 'none',
-  logLevel: 'warning',
-});
+await bundleServer({ outfile: BUNDLE, packaged: true });
 
 console.log('> building static web bundle');
 execFileSync('npx', ['--yes', 'next', 'build'], {

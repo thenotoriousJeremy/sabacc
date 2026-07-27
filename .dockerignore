@@ -1,0 +1,12 @@
+node_modules
+.next
+out
+dist
+android
+.git
+.github
+.codegraph
+screenshots
+*.log
+.env*
+!.env.example
