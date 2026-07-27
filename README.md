@@ -207,9 +207,11 @@ True Tie
   - **Card Suit Ranking**: If you want to avoid the luck of the draw, you can alternatively look at the card suit of the single highest positive card. Circle > Triangle > Square
 
 ### Deck Composition
-- 30 positive cards (values 1-15, 2 of each suit)
-- 30 negative cards (values -1 to -15, 2 of each suit)
-- 2 Sylops (value 0, rank trump all)
+- 30 positive cards: values 1-10, one in each of the three suits
+- 30 negative cards: values -1 to -10, one in each of the three suits
+- 2 Sylops (value 0, no suit)
+- Suits are Circle, Triangle and Square. A card's value is shown by repeating
+  its suit symbol that many times.
 - **Total: 62 cards**
 
 ### Gameplay Phases
