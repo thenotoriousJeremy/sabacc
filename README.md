@@ -113,7 +113,7 @@ docker-compose down
 If you prefer to run the application directly on your system:
 
 1. **Prerequisites**:
-   - Node.js 18+ and npm
+   - Node.js 20.9+ and npm
    - Git
 
 2. Clone the repository:
@@ -152,7 +152,9 @@ The application uses the following environment variables:
   clients. **Set this when exposing the server to the internet** — only the
   listed origins may then connect.
 - `STATIC_DIR`: Serve a prebuilt static bundle from this directory instead of
-  running Next.js. Used by the packaged host binary.
+  running Next.js. Set automatically by the Docker image and the host binary.
+
+`GET /healthz` returns `{ ok, rooms, uptime }` for container and uptime checks.
 
 ## Usage
 
@@ -225,6 +227,24 @@ True Tie
 - **Sabacc Winner**: Gets the Sabacc Pot if they win
 
 For more details, see [How to Play - Sabacc](https://hyperspaceprops.com/how-to-play-corellian-spike/).
+
+## Operational notes
+
+Game state lives in memory in a single process. That is a deliberate trade for a
+game you host for friends, and it has two consequences worth knowing before you
+deploy:
+
+- **Restarting the server ends every game in progress.** There is no persistence.
+- **You cannot run more than one replica.** Socket.IO has no adapter configured,
+  so two instances would not share rooms. Scale up only by giving the one
+  process more room; add a Redis adapter if you ever genuinely need a second.
+
+Rooms are reaped when empty, and abandoned rooms nobody joins are collected
+after two minutes. Every socket is rate limited by a token bucket, sized so
+ordinary play never trips it.
+
+If you expose the server to the internet, set `ALLOWED_ORIGINS`. The default
+policy is built for LAN play and accepts any private-network origin.
 
 ## Reconnecting
 
