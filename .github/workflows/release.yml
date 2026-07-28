@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  host:
+    name: host binary (${{ matrix.os }})
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: sabacc-host-linux-x64
+          - os: windows-latest
+            asset: sabacc-host-windows-x64
+          - os: macos-latest
+            asset: sabacc-host-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Node's single-executable support cannot cross-compile, so each
+          # binary is produced on its own runner.
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:host
+
+      # The binary needs the web/ directory beside it, so ship them together.
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd dist
+          tar -czf ../${{ matrix.asset }}.tar.gz sabacc-host web
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/sabacc-host.exe,dist/web -DestinationPath ${{ matrix.asset }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}.tar.gz
+            ${{ matrix.asset }}.zip
+          if-no-files-found: error
+
+  apk:
+    name: android client
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - run: npm ci
+      - run: npm run build:apk
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk sabacc-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sabacc-android
+          path: sabacc-android.apk
+          if-no-files-found: error
+
+  publish:
+    needs: [host, apk]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - run: ls -R artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            ## Hosting a game
+
+            Download the host archive for your platform, unpack it, and run
+            `sabacc-host`. It prints a LAN address to share. Keep the `web`
+            folder next to the binary.
+
+            ## Joining from Android
+
+            Install `sabacc-android.apk`, enter the host address the server
+            printed, then the room code.
+
+            The APK is debug-signed, so Android will warn about an unknown
+            source on install.

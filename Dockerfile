@@ -1,32 +1,34 @@
 # --- builder stage ---
-# build everything and keep dev dependencies so that tsx/build tools exist
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-# copy only package files first so that Docker can cache npm install layers
+# Package files first so the install layer caches independently of source.
 COPY package.json package-lock.json* ./
-RUN npm ci                  # installs both deps & devDeps (tsx, typescript, etc.)
+RUN npm ci
 
-# copy source and build the Next.js app
 COPY . .
-RUN npm run build           # Next.js will compile and output into .next
+
+# The container serves a prebuilt static bundle and a bundled server, so the
+# Next runtime and the dev toolchain stay out of the final image.
+RUN STATIC_EXPORT=true npx next build \
+ && node scripts/bundle-server.mjs dist/server.cjs
 
 # --- runtime stage ---
 FROM node:20-alpine AS runner
 WORKDIR /app
 
-# copy built Next.js output
-COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./package.json
-
-# copy source files needed at runtime (for tsx to resolve imports)
-COPY --from=builder /app/server.ts ./server.ts
-COPY --from=builder /app/lib ./lib
-COPY --from=builder /app/app ./app
+# esbuild inlined every dependency, so there is no node_modules to copy.
+COPY --from=builder /app/dist/server.cjs ./server.cjs
+COPY --from=builder /app/out ./web
 
 ENV NODE_ENV=production
+ENV STATIC_DIR=/app/web
+ENV PORT=3000
 EXPOSE 3000
 
-# run the custom server (which includes Socket.io)
-CMD ["npx", "tsx", "server.ts"]
+USER node
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "server.cjs"]

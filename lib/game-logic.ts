@@ -19,6 +19,7 @@ export interface Card {
 }
 
 export interface Player {
+  // Server-issued and stable across reconnects. Not the socket id.
   id: string;
   name: string;
   hand: Card[];
@@ -28,6 +29,7 @@ export interface Player {
   betThisRound: number;
   isAI?: boolean;
   isSpectator?: boolean;
+  isConnected?: boolean;
 }
 
 export interface ChatMessage {
