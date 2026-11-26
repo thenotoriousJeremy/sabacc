@@ -61,20 +61,24 @@ export function LedgerModal({
                   <h2 className="font-mono text-base font-bold uppercase tracking-widest text-amber-400">
                     Session Ledger & Table Rules
                   </h2>
-                  <p className="text-[11px] text-white/45">
+                  <p className="text-xs text-white/55">
                     Honest net credit audit across every buy-in and pot this session
                   </p>
                 </div>
               </div>
-              <button onClick={onClose} className="rounded-lg p-1 text-white/40 hover:bg-white/10 hover:text-white">
+              <button
+                onClick={onClose}
+                aria-label="Close Table Rules"
+                className="flex h-11 w-11 items-center justify-center rounded-lg text-white/50 hover:bg-white/10 hover:text-white"
+              >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
             {/* Session Ledger Table */}
             <div className="mb-6 overflow-x-auto rounded-xl border border-white/10 bg-black/50">
-              <table className="w-full text-left font-mono text-xs">
-                <thead className="border-b border-white/10 bg-white/5 text-[10px] uppercase tracking-wider text-white/45">
+              <table className="w-full text-left font-mono text-xs sm:text-sm">
+                <thead className="border-b border-white/10 bg-white/5 text-xs uppercase tracking-wider text-white/55">
                   <tr>
                     <th className="px-3 py-2.5">Seat</th>
                     <th className="px-3 py-2.5 text-right">Buy-In</th>

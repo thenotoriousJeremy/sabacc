@@ -115,15 +115,15 @@ export function LandingHub({
         <polygon points="200,28 372,200 200,372 28,200" fill="none" stroke="currentColor" strokeWidth="0.7" />
       </svg>
 
-      {/* Clean Top Utility Row (All buttons >= 44x44px touch targets) */}
-      <div className="relative z-10 flex w-full max-w-md items-center justify-between gap-2">
+      {/* Clean Top Utility Row (All buttons >= 44x44px touch targets, legible mobile text) */}
+      <div className="relative z-10 flex w-full max-w-md items-center justify-between gap-1.5">
         <div>
           {openRooms.length > 0 ? (
             <button
               onClick={() => setShowFriendsPanel(true)}
-              className="sw-cut-sm flex min-h-[44px] items-center gap-2 border border-emerald-400/45 bg-emerald-500/15 px-3.5 font-mono text-xs text-emerald-300 hover:bg-emerald-500/25"
+              className="sw-cut-sm flex min-h-[44px] items-center gap-1.5 whitespace-nowrap border border-emerald-400/45 bg-emerald-500/15 px-3 font-mono text-xs sm:text-sm font-bold text-emerald-300 hover:bg-emerald-500/25"
             >
-              <Radio className="h-3.5 w-3.5 animate-pulse" />
+              <Radio className="h-3.5 w-3.5 shrink-0 animate-pulse" />
               <span>
                 {openRooms.length} {openRooms.length === 1 ? 'Table' : 'Tables'} Live
               </span>
@@ -131,16 +131,16 @@ export function LandingHub({
           ) : authInfo.user ? (
             <button
               onClick={onLogout}
-              className="sw-cut-sm flex min-h-[44px] items-center gap-1.5 border border-white/15 bg-black/40 px-3 font-mono text-xs text-cyan-300 hover:text-white"
+              className="sw-cut-sm flex min-h-[44px] items-center gap-1.5 whitespace-nowrap border border-white/15 bg-black/40 px-3 font-mono text-xs sm:text-sm text-cyan-300 hover:text-white"
               title="Sign Out"
             >
               <span>{authInfo.user.name}</span>
-              <LogOut className="h-3.5 w-3.5 opacity-70" />
+              <LogOut className="h-4 w-4 opacity-70" />
             </button>
           ) : authInfo.oidcEnabled ? (
             <a
               href="/api/auth/oidc/login"
-              className="sw-cut-sm flex min-h-[44px] items-center gap-1.5 border border-cyan-400/35 bg-cyan-500/10 px-3 font-mono text-xs text-cyan-300 hover:bg-cyan-500/20"
+              className="sw-cut-sm flex min-h-[44px] items-center gap-1.5 whitespace-nowrap border border-cyan-400/35 bg-cyan-500/10 px-3 font-mono text-xs sm:text-sm text-cyan-300 hover:bg-cyan-500/20"
             >
               <ShieldCheck className="h-4 w-4" /> {authInfo.oidcProviderName}
             </a>
@@ -152,12 +152,12 @@ export function LandingHub({
           <button
             onClick={() => onOpenDossier('vault')}
             aria-label="Open Pilot Profile and Credits"
-            className="sw-cut-sm relative flex min-h-[44px] items-center gap-2 border border-amber-400/40 bg-amber-500/12 px-3.5 font-mono text-xs font-bold text-amber-300 hover:bg-amber-500/20"
+            className="sw-cut-sm relative flex min-h-[44px] items-center gap-1.5 whitespace-nowrap border border-amber-400/40 bg-amber-500/12 px-3 font-mono text-xs sm:text-sm font-bold text-amber-300 hover:bg-amber-500/20"
           >
-            <Coins className="h-4 w-4 text-amber-400" />
+            <Coins className="h-4 w-4 shrink-0 text-amber-400" />
             <span>{dossier.vaultCredits.toLocaleString()} CR</span>
             {stipendAvailable && (
-              <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" />
+              <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" />
             )}
           </button>
 
@@ -212,15 +212,15 @@ export function LandingHub({
             </div>
           </div>
 
-          <h1 className="text-4xl sm:text-5xl font-bold uppercase tracking-[0.2em] text-amber-400 drop-shadow-[0_0_24px_rgba(245,158,11,0.28)]">
+          <h1 className="text-5xl font-bold uppercase tracking-[0.18em] text-amber-400 drop-shadow-[0_0_24px_rgba(245,158,11,0.28)]">
             SABACC
           </h1>
-          <div className="font-mono text-[10px] uppercase tracking-[0.34em] text-cyan-300/75">
+          <div className="font-mono text-xs uppercase tracking-[0.3em] text-cyan-300/80">
             Corellian Spike
           </div>
 
           {lobby?.serverNotice && (
-            <div className="mt-2 rounded border border-amber-400/35 bg-amber-500/10 px-3 py-0.5 font-mono text-[11px] text-amber-300">
+            <div className="mt-2 rounded border border-amber-400/35 bg-amber-500/10 px-3.5 py-1 font-mono text-xs sm:text-sm text-amber-300">
               {lobby.serverNotice}
             </div>
           )}
@@ -230,13 +230,13 @@ export function LandingHub({
         {stipendAvailable && (
           <button
             onClick={onClaimStipend}
-            className="sw-cut-sm flex min-h-[48px] w-full items-center justify-between border border-amber-400/55 bg-gradient-to-r from-amber-500/20 to-cyan-500/15 px-4 py-2 font-mono text-xs shadow-[0_0_24px_rgba(251,191,36,0.16)] transition-all hover:border-amber-300"
+            className="sw-cut-sm flex min-h-[50px] w-full items-center justify-between border border-amber-400/55 bg-gradient-to-r from-amber-500/20 to-cyan-500/15 px-4 py-2 font-mono text-sm shadow-[0_0_24px_rgba(251,191,36,0.16)] transition-all hover:border-amber-300"
           >
             <span className="flex items-center gap-2 font-bold uppercase tracking-wider text-amber-300">
               <Gift className="h-4 w-4 text-amber-400" />
               Claim Daily Bonus
             </span>
-            <span className="sw-cut-sm bg-amber-400 px-2.5 py-1 text-[11px] font-bold text-zinc-950">
+            <span className="sw-cut-sm bg-amber-400 px-3 py-1 text-xs font-bold text-zinc-950">
               +{nextStipendAmount} CR
             </span>
           </button>
@@ -248,7 +248,7 @@ export function LandingHub({
           <div>
             <label
               htmlFor="pilot-callsign"
-              className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.22em] text-slate-400"
+              className="mb-1.5 block font-mono text-xs font-semibold uppercase tracking-[0.18em] text-slate-300"
             >
               Player Name
             </label>
@@ -259,17 +259,17 @@ export function LandingHub({
               onChange={e => onPlayerNameChange(e.target.value)}
               placeholder="Enter your name"
               maxLength={20}
-              className="sw-cut-sm min-h-[46px] w-full border border-white/15 bg-black/60 px-3.5 font-mono text-sm tracking-wider text-white placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+              className="sw-cut-sm min-h-[50px] w-full border border-white/15 bg-black/60 px-4 font-mono text-base tracking-wider text-white placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
             />
           </div>
 
           {!showFriendsPanel ? (
             <>
               {/* Stakes Selector + Big Primary Play CTA */}
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between font-mono text-[11px] text-slate-400">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between font-mono text-xs sm:text-sm text-slate-300">
                   <span>Table Stakes</span>
-                  <div className="flex gap-1">
+                  <div className="flex gap-1.5">
                     {(
                       [
                         { id: 'low', label: 'Casual' },
@@ -281,7 +281,7 @@ export function LandingHub({
                         key={s.id}
                         type="button"
                         onClick={() => setSoloStakes(s.id)}
-                        className={`rounded px-2.5 py-1 text-[10px] uppercase transition-colors ${
+                        className={`rounded px-3 py-1.5 text-xs font-bold uppercase transition-colors ${
                           soloStakes === s.id
                             ? 'bg-amber-400/20 text-amber-300 ring-1 ring-amber-400/50'
                             : 'bg-white/5 text-slate-400 hover:text-white'
@@ -296,9 +296,9 @@ export function LandingHub({
                 <button
                   disabled={!hasName}
                   onClick={() => onCreateRoom('quick_solo', soloStakes)}
-                  className="sw-cut flex min-h-[54px] w-full items-center justify-center gap-2.5 bg-amber-400 font-mono text-base font-bold uppercase tracking-[0.22em] text-zinc-950 shadow-[0_0_30px_rgba(251,191,36,0.3)] transition-all hover:bg-amber-300 active:scale-[0.99] disabled:bg-white/10 disabled:text-slate-500 disabled:shadow-none"
+                  className="sw-cut flex min-h-[56px] w-full items-center justify-center gap-2.5 bg-amber-400 font-mono text-lg font-bold uppercase tracking-[0.18em] text-zinc-950 shadow-[0_0_30px_rgba(251,191,36,0.3)] transition-all hover:bg-amber-300 active:scale-[0.99] disabled:bg-white/10 disabled:text-slate-500 disabled:shadow-none"
                 >
-                  <Play className="h-4 w-4 fill-current" /> Play Sabacc
+                  <Play className="h-5 w-5 fill-current" /> Play Sabacc
                 </button>
               </div>
 
@@ -307,11 +307,11 @@ export function LandingHub({
                 <button
                   disabled={!hasName}
                   onClick={() => onCreateRoom('cantina_tour')}
-                  className="sw-cut-sm flex min-h-[64px] flex-col items-center justify-center gap-1 border border-white/12 bg-black/45 p-2 text-center transition-colors hover:border-amber-400/50 disabled:opacity-45"
+                  className="sw-cut-sm flex min-h-[72px] flex-col items-center justify-center gap-1 border border-white/12 bg-black/45 p-2.5 text-center transition-colors hover:border-amber-400/50 disabled:opacity-45"
                 >
-                  <Compass className="h-4 w-4 text-amber-400" />
-                  <span className="font-mono text-xs font-bold uppercase text-white">Tour</span>
-                  <span className="font-mono text-[9px] text-slate-400">
+                  <Compass className="h-4.5 w-4.5 text-amber-400" />
+                  <span className="font-mono text-sm font-bold uppercase text-white">Tour</span>
+                  <span className="font-mono text-xs text-slate-400">
                     {dossier.cantinaHighestStage}/5 Planets
                   </span>
                 </button>
@@ -319,11 +319,11 @@ export function LandingHub({
                 <button
                   disabled={!hasName}
                   onClick={() => onCreateRoom('daily_kessel')}
-                  className="sw-cut-sm flex min-h-[64px] flex-col items-center justify-center gap-1 border border-white/12 bg-black/45 p-2 text-center transition-colors hover:border-cyan-400/50 disabled:opacity-45"
+                  className="sw-cut-sm flex min-h-[72px] flex-col items-center justify-center gap-1 border border-white/12 bg-black/45 p-2.5 text-center transition-colors hover:border-cyan-400/50 disabled:opacity-45"
                 >
-                  <Calendar className="h-4 w-4 text-cyan-300" />
-                  <span className="font-mono text-xs font-bold uppercase text-white">Daily</span>
-                  <span className="font-mono text-[9px] text-slate-400">
+                  <Calendar className="h-4.5 w-4.5 text-cyan-300" />
+                  <span className="font-mono text-sm font-bold uppercase text-white">Daily</span>
+                  <span className="font-mono text-xs text-slate-400">
                     {dossier.dailyBestByDate[todayKey]
                       ? `${dossier.dailyBestByDate[todayKey].finalCredits} CR`
                       : '5 Hands'}
@@ -332,11 +332,11 @@ export function LandingHub({
 
                 <button
                   onClick={() => setShowFriendsPanel(true)}
-                  className="sw-cut-sm relative flex min-h-[64px] flex-col items-center justify-center gap-1 border border-white/12 bg-black/45 p-2 text-center transition-colors hover:border-emerald-400/50"
+                  className="sw-cut-sm relative flex min-h-[72px] flex-col items-center justify-center gap-1 border border-white/12 bg-black/45 p-2.5 text-center transition-colors hover:border-emerald-400/50"
                 >
-                  <Users className="h-4 w-4 text-emerald-300" />
-                  <span className="font-mono text-xs font-bold uppercase text-white">Friends</span>
-                  <span className="font-mono text-[9px] text-slate-400">
+                  <Users className="h-4.5 w-4.5 text-emerald-300" />
+                  <span className="font-mono text-sm font-bold uppercase text-white">Friends</span>
+                  <span className="font-mono text-xs text-slate-400">
                     {openRooms.length > 0 ? `${openRooms.length} Open` : 'Host / Join'}
                   </span>
                 </button>
@@ -346,12 +346,12 @@ export function LandingHub({
             /* Clean Friends / Multiplayer Sub-View */
             <div className="space-y-3.5">
               <div className="flex items-center justify-between border-b border-white/10 pb-2">
-                <span className="font-mono text-xs font-bold uppercase tracking-wider text-cyan-300">
+                <span className="font-mono text-sm font-bold uppercase tracking-wider text-cyan-300">
                   Multiplayer Tables
                 </span>
                 <button
                   onClick={() => setShowFriendsPanel(false)}
-                  className="min-h-[36px] px-2 font-mono text-xs text-slate-400 hover:text-white"
+                  className="min-h-[40px] px-2 font-mono text-sm text-slate-300 hover:text-white"
                 >
                   ← Back
                 </button>
@@ -359,7 +359,7 @@ export function LandingHub({
 
               {needsServerUrl && (
                 <div>
-                  <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-400">
+                  <label className="mb-1 block font-mono text-xs uppercase tracking-wider text-slate-300">
                     Host Server Address
                   </label>
                   <input
@@ -369,31 +369,31 @@ export function LandingHub({
                     onChange={e => onServerUrlChange(e.target.value)}
                     onBlur={onServerUrlBlur}
                     placeholder="http://192.168.1.100:3000"
-                    className="sw-cut-sm min-h-[44px] w-full border border-white/15 bg-black/60 px-3 font-mono text-sm text-white focus:border-amber-400 focus:outline-none"
+                    className="sw-cut-sm min-h-[48px] w-full border border-white/15 bg-black/60 px-3.5 font-mono text-base text-white focus:border-amber-400 focus:outline-none"
                   />
                 </div>
               )}
 
               {openRooms.length > 0 && (
-                <div className="max-h-36 space-y-1.5 overflow-y-auto pr-1 custom-scrollbar">
+                <div className="max-h-40 space-y-1.5 overflow-y-auto pr-1 custom-scrollbar">
                   {openRooms.map(rm => (
                     <div
                       key={rm.roomId}
-                      className="sw-cut-sm flex items-center justify-between border border-cyan-400/25 bg-black/50 px-3 py-2 font-mono text-xs"
+                      className="sw-cut-sm flex items-center justify-between border border-cyan-400/25 bg-black/50 px-3.5 py-2.5 font-mono text-sm"
                     >
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="font-bold tracking-widest text-amber-300">{rm.roomId}</span>
-                          <span className="truncate text-slate-300">{rm.hostName}</span>
+                          <span className="truncate text-slate-200">{rm.hostName}</span>
                         </div>
-                        <div className="text-[10px] text-slate-400">
+                        <div className="text-xs text-slate-400">
                           {rm.seatedCount}/{rm.maxPlayers} Players
                         </div>
                       </div>
                       <button
                         disabled={!hasName}
                         onClick={() => onJoinRoom(rm.roomId)}
-                        className="sw-cut-sm min-h-[40px] bg-cyan-400 px-3.5 text-xs font-bold uppercase text-zinc-950 hover:bg-cyan-300 disabled:opacity-40"
+                        className="sw-cut-sm min-h-[42px] bg-cyan-400 px-4 text-xs font-bold uppercase text-zinc-950 hover:bg-cyan-300 disabled:opacity-40"
                       >
                         Join
                       </button>
@@ -418,12 +418,12 @@ export function LandingHub({
                   autoCapitalize="characters"
                   autoComplete="off"
                   spellCheck={false}
-                  className="sw-cut-sm min-h-[46px] flex-1 border border-white/15 bg-black/60 px-3.5 font-mono text-sm tracking-[0.25em] text-amber-300 placeholder:tracking-wider placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+                  className="sw-cut-sm min-h-[48px] flex-1 border border-white/15 bg-black/60 px-3.5 font-mono text-base tracking-[0.22em] text-amber-300 placeholder:tracking-wider placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
                 />
                 <button
                   disabled={!hasName || roomId.length < 4}
                   onClick={() => onJoinRoom()}
-                  className="sw-cut-sm min-h-[46px] bg-amber-400 px-5 font-mono text-xs font-bold uppercase tracking-widest text-zinc-950 hover:bg-amber-300 disabled:bg-white/10 disabled:text-slate-500"
+                  className="sw-cut-sm min-h-[48px] bg-amber-400 px-5 font-mono text-sm font-bold uppercase tracking-widest text-zinc-950 hover:bg-amber-300 disabled:bg-white/10 disabled:text-slate-500"
                 >
                   Join
                 </button>
@@ -433,24 +433,24 @@ export function LandingHub({
                 <button
                   disabled={!hasName}
                   onClick={() => onCreateRoom('party', 'medium', publicRoom)}
-                  className="sw-cut-sm min-h-[46px] flex-1 border border-cyan-400/45 bg-cyan-500/15 font-mono text-xs font-bold uppercase tracking-wider text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-45"
+                  className="sw-cut-sm min-h-[48px] flex-1 border border-cyan-400/45 bg-cyan-500/15 font-mono text-sm font-bold uppercase tracking-wider text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-45"
                 >
-                  Host New Table
+                  Host Table
                 </button>
                 <button
                   onClick={() => setPublicRoom(v => !v)}
-                  className="sw-cut-sm flex min-h-[46px] items-center gap-1.5 border border-white/15 bg-black/40 px-3 font-mono text-[11px] uppercase text-slate-300"
+                  className="sw-cut-sm flex min-h-[48px] items-center gap-1.5 border border-white/15 bg-black/40 px-3 font-mono text-xs uppercase text-slate-200"
                   title={publicRoom ? 'Visible on server lobby' : 'Private — code only'}
                 >
-                  {publicRoom ? <Globe className="h-3.5 w-3.5 text-emerald-400" /> : <Lock className="h-3.5 w-3.5 text-amber-400" />}
+                  {publicRoom ? <Globe className="h-4 w-4 text-emerald-400" /> : <Lock className="h-4 w-4 text-amber-400" />}
                   <span>{publicRoom ? 'Public' : 'Private'}</span>
                 </button>
                 <button
                   onClick={onToggleSpectator}
-                  className={`sw-cut-sm min-h-[46px] border px-3 font-mono text-[11px] uppercase transition-colors ${
+                  className={`sw-cut-sm min-h-[48px] border px-3 font-mono text-xs uppercase transition-colors ${
                     isSpectator
                       ? 'border-amber-400 bg-amber-500/20 text-amber-300'
-                      : 'border-white/15 bg-black/40 text-slate-400 hover:text-white'
+                      : 'border-white/15 bg-black/40 text-slate-300 hover:text-white'
                   }`}
                 >
                   {isSpectator ? 'Watch' : 'Play'}
@@ -481,7 +481,7 @@ export function LandingHub({
       )}
 
       {/* Clean Footer: Instant Tutorial, Hand Ranks & App Store Privacy/Fair-Play Disclosure */}
-      <div className="relative z-10 flex flex-wrap items-center justify-center gap-4 font-mono text-xs text-slate-400">
+      <div className="relative z-10 flex flex-wrap items-center justify-center gap-4 font-mono text-sm text-slate-400">
         <button
           onClick={onOpenTutorial}
           className="inline-flex min-h-[44px] items-center gap-1.5 hover:text-amber-300"

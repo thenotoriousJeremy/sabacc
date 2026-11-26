@@ -14,7 +14,7 @@ RUN STATIC_EXPORT=true npx next build \
 FROM node:22-alpine AS runner
 WORKDIR /app
 
-ARG VERSION=0.2.0
+ARG VERSION=0.2.1
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 

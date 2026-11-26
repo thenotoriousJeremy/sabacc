@@ -108,7 +108,7 @@ export function SpikeDiceCradle({
             />
           );
         })}
-        <span className="ml-1 font-mono text-[10px] uppercase tracking-wider text-slate-300">
+        <span className="ml-1 font-mono text-xs font-bold uppercase tracking-wider text-slate-200">
           Rd {round}/3
         </span>
       </div>

@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { KeyRound, Lock, ShieldCheck, Sun, Moon } from 'lucide-react';
+import { apiUrl } from '@/lib/api-base';
 import { ColorMode } from '@/lib/progression';
 
 export interface AuthGateProps {
@@ -32,9 +33,10 @@ export function AuthGate({
     setBusy(true);
     setError(null);
     try {
-      const resp = await fetch('/api/auth/login', {
+      const resp = await fetch(apiUrl('/api/auth/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ password, callsign: callsign.trim() || 'Pilot' }),
       });
       const data = (await resp.json()) as { ok?: boolean; error?: string };
@@ -93,7 +95,7 @@ export function AuthGate({
         {passwordEnabled && (
           <form onSubmit={handlePasswordSubmit} className="space-y-3.5">
             <div>
-              <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.22em] text-cyan-300/70">
+              <label className="mb-1 block font-mono text-xs uppercase tracking-[0.18em] text-cyan-300/80">
                 Pilot Callsign
               </label>
               <input
@@ -102,12 +104,12 @@ export function AuthGate({
                 onChange={e => setCallsign(e.target.value)}
                 placeholder="Han Solo"
                 maxLength={20}
-                className="sw-cut-sm w-full border border-white/15 bg-black/60 px-3.5 py-2.5 font-mono text-sm text-white focus:border-amber-400 focus:outline-none"
+                className="sw-cut-sm min-h-[48px] w-full border border-white/15 bg-black/60 px-3.5 font-mono text-base text-white focus:border-amber-400 focus:outline-none"
               />
             </div>
 
             <div>
-              <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.22em] text-cyan-300/70">
+              <label className="mb-1 block font-mono text-xs uppercase tracking-[0.18em] text-cyan-300/80">
                 Site Password
               </label>
               <div className="relative">
@@ -118,7 +120,7 @@ export function AuthGate({
                   onChange={e => setPassword(e.target.value)}
                   placeholder="••••••••"
                   required
-                  className="sw-cut-sm w-full border border-white/15 bg-black/60 py-2.5 pl-9 pr-3.5 font-mono text-sm text-white focus:border-amber-400 focus:outline-none"
+                  className="sw-cut-sm min-h-[48px] w-full border border-white/15 bg-black/60 pl-9 pr-3.5 font-mono text-base text-white focus:border-amber-400 focus:outline-none"
                 />
               </div>
             </div>
@@ -132,7 +134,7 @@ export function AuthGate({
             <button
               type="submit"
               disabled={busy || !password}
-              className="sw-cut-sm w-full bg-amber-400 py-3 font-mono text-xs font-bold uppercase tracking-[0.22em] text-zinc-950 hover:bg-amber-300 disabled:opacity-40"
+              className="sw-cut-sm min-h-[50px] w-full bg-amber-400 font-mono text-sm font-bold uppercase tracking-[0.2em] text-zinc-950 hover:bg-amber-300 disabled:opacity-40"
             >
               {busy ? 'Verifying...' : 'Unlock Holotable'}
             </button>

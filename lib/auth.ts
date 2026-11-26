@@ -106,9 +106,13 @@ export function issueSessionCookie(res: Response, req: Request, session: Omit<Au
   };
   const token = signPayload(full);
   const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  const origin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
+  const isPackagedCrossOrigin =
+    origin === 'https://localhost' || origin === 'capacitor://localhost';
+  const sameSite = secure && isPackagedCrossOrigin ? 'None' : 'Lax';
   res.setHeader(
     'Set-Cookie',
-    `${AUTH_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}${
+    `${AUTH_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=${SESSION_TTL_SECONDS}${
       secure ? '; Secure' : ''
     }`
   );

@@ -35,6 +35,12 @@ import {
 } from '@/lib/game-logic';
 import { armAudio, playCue, setCantinaAmbience, SoundCue, triggerHaptic } from '@/lib/audio';
 import { LocalGameTransport } from '@/lib/local-transport';
+import {
+  apiUrl,
+  getConfiguredServerUrl,
+  HOST_STORAGE_KEY,
+  normalizeBaseUrl,
+} from '@/lib/api-base';
 import { QUICK_EMOTES } from '@/lib/personas';
 import {
   claimDailyStipend,
@@ -140,12 +146,8 @@ function clearLastTable() {
   }
 }
 
-const HOST_STORAGE_KEY = 'sabacc:serverUrl';
-
 function getServerUrl(): string | undefined {
-  if (process.env.NEXT_PUBLIC_SERVER_URL) return process.env.NEXT_PUBLIC_SERVER_URL;
-  if (typeof window === 'undefined') return undefined;
-  return window.localStorage.getItem(HOST_STORAGE_KEY) || undefined;
+  return getConfiguredServerUrl() || undefined;
 }
 
 const REQUIRES_HOST_ADDRESS =
@@ -269,8 +271,7 @@ export default function SabaccGame() {
   const handleEraseAllData = useCallback(async () => {
     const oldKey = dossierRef.current.pilotKey;
     try {
-      const base = getServerUrl() ?? '';
-      await fetch(`${base}/api/pilot/delete`, {
+      await fetch(apiUrl('/api/pilot/delete'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -293,8 +294,7 @@ export default function SabaccGame() {
   const refreshAuthAndLobby = useCallback(async () => {
     if (REQUIRES_HOST_ADDRESS && !getServerUrl()) return;
     try {
-      const base = getServerUrl() ?? '';
-      const authResp = await fetch(`${base}/api/auth/status`, { credentials: 'include' });
+      const authResp = await fetch(apiUrl('/api/auth/status'), { credentials: 'include' });
       if (authResp.ok) {
         const st = (await authResp.json()) as AuthStatusResponse;
         setAuthStatus(st);
@@ -302,7 +302,7 @@ export default function SabaccGame() {
           setPlayerName(curr => curr || st.user!.name);
         }
         if (!st.locked || st.authenticated) {
-          const lobResp = await fetch(`${base}/api/lobby`, { credentials: 'include' });
+          const lobResp = await fetch(apiUrl('/api/lobby'), { credentials: 'include' });
           if (lobResp.ok) {
             setLobbySnapshot((await lobResp.json()) as LobbySnapshot);
           }
@@ -881,10 +881,28 @@ export default function SabaccGame() {
           }}
           needsServerUrl={REQUIRES_HOST_ADDRESS}
           serverUrl={serverUrl}
-          onServerUrlChange={setServerUrl}
+          onServerUrlChange={val => {
+            setServerUrl(val);
+            try {
+              const norm = normalizeBaseUrl(val);
+              if (norm) window.localStorage.setItem(HOST_STORAGE_KEY, norm);
+              else window.localStorage.removeItem(HOST_STORAGE_KEY);
+            } catch {
+              // Ignore storage errors.
+            }
+          }}
           onServerUrlBlur={() => {
-            const trimmed = serverUrl.trim();
-            if (trimmed) window.localStorage.setItem(HOST_STORAGE_KEY, trimmed);
+            const norm = normalizeBaseUrl(serverUrl);
+            try {
+              if (norm) {
+                setServerUrl(norm);
+                window.localStorage.setItem(HOST_STORAGE_KEY, norm);
+              } else {
+                window.localStorage.removeItem(HOST_STORAGE_KEY);
+              }
+            } catch {
+              // Ignore storage errors.
+            }
             refreshAuthAndLobby();
           }}
           errorMessage={errorMessage}
@@ -921,7 +939,7 @@ export default function SabaccGame() {
             setShowAdmin(true);
           }}
           onLogout={async () => {
-            await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+            await fetch(apiUrl('/api/auth/logout'), { method: 'POST', credentials: 'include' });
             refreshAuthAndLobby();
           }}
           onJoinRoom={handleJoinExisting}
@@ -1101,6 +1119,7 @@ export default function SabaccGame() {
       <QrInviteModal
         open={showQrInvite}
         roomId={gameState.roomId}
+        serverUrl={serverUrl}
         onClose={() => setShowQrInvite(false)}
       />
       <LedgerModal
@@ -1260,13 +1279,13 @@ export default function SabaccGame() {
                 sound('click');
                 setShowQrInvite(true);
               }}
-              className="sw-cut-sm flex min-h-[38px] items-center gap-1.5 border border-cyan-400/30 bg-cyan-500/10 px-3 font-mono text-xs tracking-widest text-cyan-200 hover:bg-cyan-500/20"
+              className="sw-cut-sm flex min-h-[40px] items-center gap-1.5 border border-cyan-400/35 bg-cyan-500/12 px-3 font-mono text-sm font-bold tracking-widest text-cyan-200 hover:bg-cyan-500/20"
             >
-              <QrCode className="h-3.5 w-3.5 text-cyan-300" />
+              <QrCode className="h-4 w-4 text-cyan-300" />
               <span>{gameState.roomId}</span>
             </button>
           ) : (
-            <div className="truncate font-mono text-xs uppercase tracking-wider text-slate-300">
+            <div className="truncate font-mono text-sm font-semibold uppercase tracking-wider text-slate-200">
               {gameState.tour ? (
                 <span>
                   {gameState.tour.venueName}{' '}
@@ -1279,13 +1298,13 @@ export default function SabaccGame() {
                   Daily {gameState.daily.handsCompleted}/{gameState.daily.maxHands}
                 </span>
               ) : (
-                <span>Cantina Table</span>
+                <span>Sabacc</span>
               )}
             </div>
           )}
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             onClick={() => {
               sound('click');
@@ -1298,12 +1317,12 @@ export default function SabaccGame() {
                 setShowLedger(true);
               }
             }}
-            className="sw-cut-sm flex min-h-[40px] items-center gap-1.5 border border-amber-400/40 bg-amber-500/10 px-3 font-mono text-xs sm:text-sm text-amber-300 hover:bg-amber-500/20"
+            className="sw-cut-sm flex min-h-[40px] items-center gap-1.5 whitespace-nowrap border border-amber-400/40 bg-amber-500/12 px-2.5 sm:px-3 font-mono text-sm text-amber-300 hover:bg-amber-500/20"
           >
             <Coins className="h-4 w-4 text-amber-400" />
             <AnimatedCredits value={me?.credits ?? 0} showDelta className="font-bold" />
             {dossier.currentStreak >= 2 && (
-              <span className="ml-0.5 inline-flex items-center gap-0.5 text-[11px] font-bold text-orange-300">
+              <span className="ml-0.5 inline-flex items-center gap-0.5 text-xs font-bold text-orange-300">
                 <Flame className="h-3.5 w-3.5 text-orange-400" />
                 {dossier.currentStreak}
               </span>
@@ -1339,7 +1358,7 @@ export default function SabaccGame() {
       </header>
 
       {/* FULL-BLEED RECESSED CANTINA HOLOTABLE — Fills the entire playfield with zero dead space */}
-      <main className="relative flex min-h-0 flex-1 flex-col p-2 sm:p-4">
+      <main className="relative flex min-h-0 flex-1 flex-col p-1.5 sm:p-4">
         <div
           onClick={() => setSeatMenuPlayerId(null)}
           style={{
@@ -1348,7 +1367,7 @@ export default function SabaccGame() {
                 ? 'radial-gradient(ellipse at 50% 46%, #1e293b 0%, #0f172a 66%, #070b13 100%)'
                 : feltSpec.feltStyle,
           }}
-          className={`holotable-felt relative mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col justify-between overflow-hidden rounded-[34px] sm:rounded-[52px] border-[3px] px-3 py-3 sm:px-8 sm:py-5 ${
+          className={`holotable-felt relative mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col justify-between overflow-hidden rounded-[30px] sm:rounded-[52px] border-[3px] px-2.5 py-2 sm:px-8 sm:py-5 ${
             isLight && activeFeltId === 'cantina-brass'
               ? 'border-slate-700/85 shadow-[0_24px_60px_rgba(15,23,42,0.35),inset_0_0_75px_rgba(0,0,0,0.8)]'
               : feltSpec.railClass
@@ -1392,7 +1411,7 @@ export default function SabaccGame() {
                     e.stopPropagation();
                     setSeatMenuPlayerId(curr => (curr === p.id ? null : p.id));
                   }}
-                  className={`sw-cut-sm relative flex min-w-[98px] sm:min-w-[146px] max-w-[172px] flex-col items-center border px-2.5 py-2 sm:px-3.5 sm:py-2.5 backdrop-blur-md transition-all ${
+                  className={`sw-cut-sm relative flex min-w-[100px] sm:min-w-[148px] max-w-[172px] flex-col items-center border px-2 py-1.5 sm:px-3.5 sm:py-2.5 backdrop-blur-md transition-all ${
                     canModerate ? 'cursor-pointer' : ''
                   } ${
                     p.isFolded
@@ -1406,21 +1425,21 @@ export default function SabaccGame() {
                 >
                   <div className="flex w-full items-center justify-between gap-1.5">
                     <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-amber-400/35 bg-amber-500/15 font-mono text-[10px] font-bold uppercase text-amber-300">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-amber-400/35 bg-amber-500/15 font-mono text-xs font-bold uppercase text-amber-300">
                         {p.name.slice(0, 1)}
                       </span>
-                      <span className="truncate text-xs sm:text-sm font-semibold text-white">
+                      <span className="truncate text-sm font-bold text-white">
                         {p.name}
                       </span>
                     </div>
-                    <span className="shrink-0 font-mono text-[11px] font-bold text-amber-300/90">
+                    <span className="shrink-0 font-mono text-xs font-bold text-amber-300">
                       {p.credits}
                     </span>
                   </div>
 
                   {isDealer && (
                     <span
-                      className="absolute -right-1 -top-1 flex h-4.5 w-4.5 items-center justify-center rounded-sm bg-amber-400 font-mono text-[9px] font-bold text-zinc-950 shadow"
+                      className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-sm bg-amber-400 font-mono text-[10px] font-bold text-zinc-950 shadow"
                       title="Dealer"
                     >
                       D
@@ -1458,21 +1477,21 @@ export default function SabaccGame() {
                   )}
 
                   {revealedEval ? (
-                    <span className="mt-1 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-300">
+                    <span className="mt-1 font-mono text-xs font-bold uppercase tracking-wider text-amber-300">
                       {revealedEval.sum === 0
                         ? `★ ${revealedEval.rankName}`
                         : `Total ${revealedEval.sum > 0 ? `+${revealedEval.sum}` : revealedEval.sum}`}
                     </span>
                   ) : p.lastAction && !(isMuted && p.lastAction.tone === 'emote') ? (
                     <span
-                      className={`mt-1 max-w-full truncate font-mono text-[10px] ${
+                      className={`mt-1 max-w-full truncate font-mono text-xs ${
                         p.lastAction.tone === 'quips' || p.lastAction.tone === 'emote'
-                          ? 'italic text-amber-200/90'
+                          ? 'italic text-amber-200/95'
                           : p.lastAction.tone === 'raise' || p.lastAction.tone === 'all_in'
                             ? 'font-bold text-amber-300'
                             : p.lastAction.tone === 'fold'
-                              ? 'text-rose-300/80'
-                              : 'text-cyan-200/90'
+                              ? 'text-rose-300/85'
+                              : 'text-cyan-200/95'
                       }`}
                       title={p.lastAction.text}
                     >
@@ -1493,7 +1512,7 @@ export default function SabaccGame() {
                           );
                           setSeatMenuPlayerId(null);
                         }}
-                        className="flex min-h-[36px] items-center gap-1 rounded px-2.5 font-mono text-[10px] uppercase text-slate-200 hover:bg-white/10"
+                        className="flex min-h-[40px] items-center gap-1 rounded px-3 font-mono text-xs uppercase text-slate-200 hover:bg-white/10"
                       >
                         <VolumeX className="h-3.5 w-3.5" /> {isMuted ? 'Unmute' : 'Mute'}
                       </button>
@@ -1505,7 +1524,7 @@ export default function SabaccGame() {
                           setMilestoneBanner(`REPORTED & MUTED // ${p.name.toUpperCase()}`);
                           setTimeout(() => setMilestoneBanner(null), 2600);
                         }}
-                        className="flex min-h-[36px] items-center gap-1 rounded px-2.5 font-mono text-[10px] uppercase text-rose-300 hover:bg-rose-500/20"
+                        className="flex min-h-[40px] items-center gap-1 rounded px-3 font-mono text-xs uppercase text-rose-300 hover:bg-rose-500/20"
                       >
                         <Flag className="h-3.5 w-3.5" /> Report
                       </button>
@@ -1517,7 +1536,7 @@ export default function SabaccGame() {
           </div>
 
           {/* 2. CENTER FELT WELL: Shoe + Docked Spike Dice & Pots + Face-Up Discard */}
-          <div className="relative z-10 flex flex-col items-center justify-center gap-2.5 py-1">
+          <div className="relative z-10 flex flex-col items-center justify-center gap-1.5 sm:gap-2.5 py-0.5">
             {gameState.currentPhase === 'SHOWDOWN' ? (
               <ShowdownOverlay
                 gameState={gameState}
@@ -1582,10 +1601,10 @@ export default function SabaccGame() {
                       />
                     </div>
                     <span
-                      className={`font-mono text-[10px] font-bold uppercase tracking-wider ${
+                      className={`font-mono text-xs font-bold uppercase tracking-wider ${
                         isMyTurn && gameState.currentPhase === 'CARD' && selectedCardId
                           ? 'text-cyan-300'
-                          : 'text-slate-300/80'
+                          : 'text-slate-200/85'
                       }`}
                     >
                       {isMyTurn && gameState.currentPhase === 'CARD'
@@ -1599,7 +1618,7 @@ export default function SabaccGame() {
                   {/* Central Pot Well */}
                   <div className="sw-cut flex flex-col sm:flex-row items-center gap-2.5 sm:gap-7 border border-amber-400/30 bg-black/65 px-4 py-3 sm:px-7 sm:py-4 shadow-[0_12px_36px_rgba(0,0,0,0.65)] backdrop-blur-md">
                     <div className="flex flex-col items-center">
-                      <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-amber-200/70">
+                      <span className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-amber-200/85">
                         Hand Pot
                       </span>
                       <div className="mt-0.5 flex items-center gap-1.5 sm:gap-2">
@@ -1614,7 +1633,7 @@ export default function SabaccGame() {
                     <div className="h-px w-14 sm:h-9 sm:w-px bg-white/12" />
 
                     <div className="flex flex-col items-center">
-                      <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-rose-200/75">
+                      <span className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-rose-200/85">
                         Sabacc Pot
                       </span>
                       <div className="mt-0.5 flex items-center gap-1.5 sm:gap-2">
@@ -1675,12 +1694,12 @@ export default function SabaccGame() {
                       </div>
                     )}
                     <span
-                      className={`font-mono text-[10px] font-bold uppercase tracking-wider ${
+                      className={`font-mono text-xs font-bold uppercase tracking-wider ${
                         isMyTurn &&
                         gameState.currentPhase === 'CARD' &&
                         (selectedCardId || pendingSwapMode === 'swap_discard')
                           ? 'text-amber-300'
-                          : 'text-slate-300/80'
+                          : 'text-slate-200/85'
                       }`}
                     >
                       {isMyTurn && gameState.currentPhase === 'CARD' && topDiscard
@@ -1710,7 +1729,7 @@ export default function SabaccGame() {
                   (me?.credits ?? 0) < reqAnte ? (
                     <button
                       onClick={() => setShowBuyIn(true)}
-                      className="sw-cut-sm min-h-[46px] bg-amber-400 px-5 font-mono text-xs font-bold uppercase tracking-widest text-zinc-950"
+                      className="sw-cut-sm min-h-[48px] bg-amber-400 px-5 font-mono text-sm font-bold uppercase tracking-widest text-zinc-950"
                     >
                       Add Chips ({reqAnte}+ CR)
                     </button>
@@ -1720,7 +1739,7 @@ export default function SabaccGame() {
                         sound('click');
                         socket?.emit('ready', {});
                       }}
-                      className="sw-cut-sm flex min-h-[46px] items-center gap-2 bg-amber-400 px-6 font-mono text-xs font-bold uppercase tracking-[0.2em] text-zinc-950 shadow-[0_0_24px_rgba(251,191,36,0.35)] hover:bg-amber-300"
+                      className="sw-cut-sm flex min-h-[48px] items-center gap-2 bg-amber-400 px-6 font-mono text-sm font-bold uppercase tracking-[0.18em] text-zinc-950 shadow-[0_0_24px_rgba(251,191,36,0.35)] hover:bg-amber-300"
                     >
                       <Play className="h-4 w-4 fill-current" /> Deal Hand
                     </button>
@@ -1732,7 +1751,7 @@ export default function SabaccGame() {
                   gameState.players.some(p => !p.isAI && !p.isReady) && (
                     <button
                       onClick={() => socket?.emit('startHandNow', {})}
-                      className="sw-cut-sm min-h-[44px] border border-amber-400/45 bg-black/70 px-4 font-mono text-xs uppercase tracking-wider text-amber-300 hover:bg-amber-500/20"
+                      className="sw-cut-sm min-h-[46px] border border-amber-400/45 bg-black/70 px-4 font-mono text-sm font-bold uppercase tracking-wider text-amber-300 hover:bg-amber-500/20"
                     >
                       Start Now
                     </button>
@@ -1754,7 +1773,7 @@ export default function SabaccGame() {
                             sound('click');
                             socket?.emit('addAI', { skill: sk.id });
                           }}
-                          className="sw-cut-sm min-h-[40px] border border-white/15 bg-black/60 px-3 font-mono text-[11px] uppercase text-slate-200 hover:border-cyan-400/50 hover:text-cyan-200"
+                          className="sw-cut-sm min-h-[42px] border border-white/15 bg-black/60 px-3 font-mono text-xs font-semibold uppercase text-slate-200 hover:border-cyan-400/50 hover:text-cyan-200"
                         >
                           {sk.label}
                         </button>
@@ -1766,7 +1785,7 @@ export default function SabaccGame() {
           </div>
 
           {/* 3. LOWER FELT RIM: Large Tactile Player Hand & Single Intuitive Total Pill */}
-          <div className="relative z-20 flex flex-col items-center gap-2 pb-0.5">
+          <div className="relative z-20 flex flex-col items-center gap-1.5 sm:gap-2 pb-0.5">
             {pendingSwapMode && isMyTurn && gameState.currentPhase === 'CARD' && (
               <div className="sw-cut-sm flex items-center gap-2 border border-amber-400 bg-amber-500/20 px-3.5 py-1.5 font-mono text-xs font-bold text-amber-200">
                 <span>
@@ -1807,7 +1826,7 @@ export default function SabaccGame() {
                       transition={{ type: 'spring', stiffness: 420, damping: 26 }}
                       onMouseEnter={() => setHoveredCardId(card.id)}
                       onMouseLeave={() => setHoveredCardId(curr => (curr === card.id ? null : curr))}
-                      className={`relative h-30 w-20.5 text-[48px] sm:h-38 sm:w-26 sm:text-[62px] ${
+                      className={`relative h-27 w-19 text-[44px] sm:h-38 sm:w-26 sm:text-[62px] ${
                         isSwapTarget ? 'ring-2 ring-amber-400/80 rounded-lg' : ''
                       }`}
                     >
@@ -1847,9 +1866,9 @@ export default function SabaccGame() {
 
             {/* Single Crystal-Clear Hand Total Pill (Zero Cryptic Jargon) */}
             {me && !me.isFolded && myEval && gameState.currentPhase !== 'JOINING' && (
-              <div className="flex flex-wrap items-center justify-center gap-2 font-mono text-xs">
+              <div className="flex flex-wrap items-center justify-center gap-2 font-mono text-sm">
                 <div
-                  className={`sw-cut-sm flex items-center gap-2 border px-4 py-1 ${
+                  className={`sw-cut-sm flex items-center gap-2 border px-4 py-1.5 ${
                     myEval.sum === 0
                       ? 'border-amber-400/75 bg-amber-500/20 text-amber-200 shadow-[0_0_22px_rgba(251,191,36,0.28)]'
                       : 'border-white/15 bg-black/75 text-slate-200'
@@ -1857,25 +1876,25 @@ export default function SabaccGame() {
                 >
                   {myEval.sum === 0 ? (
                     <>
-                      <Sparkles className="h-3.5 w-3.5 text-amber-400" />
+                      <Sparkles className="h-4 w-4 text-amber-400" />
                       <span className="font-bold uppercase tracking-wider text-amber-300">
                         0 · {myEval.rankName}
                       </span>
                     </>
                   ) : (
                     <>
-                      <span className="text-slate-400">Total</span>
-                      <span className="text-sm font-bold text-amber-300">
+                      <span className="text-slate-300">Total</span>
+                      <span className="text-base font-bold text-amber-300">
                         {myEval.sum > 0 ? `+${myEval.sum}` : myEval.sum}
                       </span>
                       <span className="text-white/25">•</span>
-                      <span className="text-[11px] text-cyan-200/80">Goal: 0</span>
+                      <span className="text-xs font-semibold text-cyan-200/90">Goal: 0</span>
                     </>
                   )}
                 </div>
 
                 {swapDiscardPreview && topDiscard && isMyTurn && gameState.currentPhase === 'CARD' && (
-                  <div className="sw-cut-sm flex items-center gap-1.5 border border-amber-400/50 bg-amber-950/80 px-3 py-1 text-xs text-amber-200">
+                  <div className="sw-cut-sm flex items-center gap-1.5 border border-amber-400/50 bg-amber-950/85 px-3.5 py-1.5 text-xs sm:text-sm text-amber-200">
                     <span>
                       Take {topDiscardLabel} →{' '}
                       <strong>
@@ -1899,7 +1918,7 @@ export default function SabaccGame() {
             selectedCardId ? (
               /* Card Selected -> Cancel on Left, Swap Deck in Center, Primary Take Discard on Right (under right thumb!) */
               <div className="space-y-1.5">
-                <div className="text-center font-mono text-[11px] text-amber-300">
+                <div className="text-center font-mono text-xs sm:text-sm font-semibold text-amber-300">
                   Choose where to trade your selected card:
                 </div>
                 <div className="grid grid-cols-3 gap-2">
@@ -1909,7 +1928,7 @@ export default function SabaccGame() {
                       setSelectedCardId(null);
                       setPendingSwapMode(null);
                     }}
-                    className="sw-cut-sm min-h-[52px] border border-white/15 bg-white/5 font-mono text-xs uppercase text-slate-300 hover:text-white active:scale-[0.97]"
+                    className="sw-cut-sm min-h-[52px] border border-white/15 bg-white/5 font-mono text-sm font-semibold uppercase text-slate-200 hover:text-white active:scale-[0.97]"
                   >
                     Cancel
                   </button>
@@ -1921,7 +1940,7 @@ export default function SabaccGame() {
                       setSelectedCardId(null);
                       setPendingSwapMode(null);
                     }}
-                    className="sw-cut-sm min-h-[52px] border border-cyan-400/60 bg-cyan-500/20 font-mono text-xs font-bold uppercase tracking-wider text-cyan-100 hover:bg-cyan-500/30 active:scale-[0.97]"
+                    className="sw-cut-sm min-h-[52px] border border-cyan-400/60 bg-cyan-500/20 font-mono text-sm font-bold uppercase tracking-wider text-cyan-100 hover:bg-cyan-500/30 active:scale-[0.97]"
                   >
                     Swap Deck
                   </button>
@@ -1934,7 +1953,7 @@ export default function SabaccGame() {
                       setSelectedCardId(null);
                       setPendingSwapMode(null);
                     }}
-                    className="sw-cut-sm min-h-[52px] bg-amber-400 font-mono text-xs font-bold uppercase tracking-wider text-zinc-950 hover:bg-amber-300 active:scale-[0.97] disabled:opacity-35"
+                    className="sw-cut-sm min-h-[52px] bg-amber-400 font-mono text-sm font-bold uppercase tracking-wider text-zinc-950 hover:bg-amber-300 active:scale-[0.97] disabled:opacity-35"
                   >
                     {topDiscard ? `Take ${topDiscardLabel}` : 'Discard'}
                   </button>
@@ -1943,7 +1962,7 @@ export default function SabaccGame() {
             ) : (
               /* Default Card Phase -> Draw on Left, Primary Stand on Right (under right thumb!) */
               <div className="space-y-1.5">
-                <div className="text-center font-mono text-[11px] text-slate-400">
+                <div className="text-center font-mono text-xs sm:text-sm text-slate-300">
                   Tap a card in your hand to swap it, or choose below:
                 </div>
                 <div className="grid grid-cols-2 gap-2.5">
@@ -1955,7 +1974,7 @@ export default function SabaccGame() {
                       setPendingSwapMode(null);
                     }}
                     disabled={(me?.hand.length ?? 0) >= 6}
-                    className="sw-cut-sm min-h-[52px] border border-cyan-400/55 bg-cyan-500/15 font-mono text-sm font-bold uppercase tracking-wider text-cyan-100 hover:bg-cyan-500/25 active:scale-[0.97] disabled:opacity-35"
+                    className="sw-cut-sm min-h-[52px] border border-cyan-400/55 bg-cyan-500/15 font-mono text-base font-bold uppercase tracking-wider text-cyan-100 hover:bg-cyan-500/25 active:scale-[0.97] disabled:opacity-35"
                   >
                     Draw Card
                   </button>
@@ -1967,7 +1986,7 @@ export default function SabaccGame() {
                       setSelectedCardId(null);
                       setPendingSwapMode(null);
                     }}
-                    className="sw-cut-sm min-h-[52px] bg-amber-400 font-mono text-sm font-bold uppercase tracking-wider text-zinc-950 hover:bg-amber-300 active:scale-[0.97]"
+                    className="sw-cut-sm min-h-[52px] bg-amber-400 font-mono text-base font-bold uppercase tracking-wider text-zinc-950 hover:bg-amber-300 active:scale-[0.97]"
                   >
                     Stand
                   </button>
@@ -1987,7 +2006,7 @@ export default function SabaccGame() {
                 <div className="space-y-2">
                   {/* Comfy 4-Chip Preset Row — Zero Sliders! */}
                   {maxRaiseAdd > 0 && (
-                    <div className="grid grid-cols-4 gap-2 font-mono text-xs">
+                    <div className="grid grid-cols-4 gap-2 font-mono text-xs sm:text-sm">
                       {[
                         { id: 'min', label: `Min ${minRaiseAdd}`, val: minRaiseAdd },
                         { id: 'mid', label: `2× (${step2x})`, val: step2x },
@@ -2004,7 +2023,7 @@ export default function SabaccGame() {
                             className={`sw-cut-sm min-h-[44px] border font-bold uppercase transition-colors active:scale-[0.97] ${
                               isPicked
                                 ? 'border-amber-400 bg-amber-500/25 text-amber-300'
-                                : 'border-white/15 bg-white/[0.05] text-slate-300 hover:text-white'
+                                : 'border-white/15 bg-white/[0.05] text-slate-200 hover:text-white'
                             }`}
                           >
                             {chip.label}
@@ -2031,7 +2050,7 @@ export default function SabaccGame() {
                         sound('fold');
                         socket?.emit('betAction', { action: 'fold' });
                       }}
-                      className="sw-cut-sm min-h-[52px] border border-rose-500/50 bg-rose-500/15 font-mono text-xs sm:text-sm font-bold uppercase tracking-wider text-rose-300 hover:bg-rose-500/25 active:scale-[0.97]"
+                      className="sw-cut-sm min-h-[52px] border border-rose-500/50 bg-rose-500/15 font-mono text-sm sm:text-base font-bold uppercase tracking-wider text-rose-300 hover:bg-rose-500/25 active:scale-[0.97]"
                     >
                       Fold
                     </button>
@@ -2042,7 +2061,7 @@ export default function SabaccGame() {
                           sound('chips');
                           socket?.emit('betAction', { action: 'call' });
                         }}
-                        className="sw-cut-sm min-h-[52px] border border-emerald-400/60 bg-emerald-500/20 font-mono text-xs sm:text-sm font-bold uppercase tracking-wider text-emerald-200 hover:bg-emerald-500/30 active:scale-[0.97]"
+                        className="sw-cut-sm min-h-[52px] border border-emerald-400/60 bg-emerald-500/20 font-mono text-sm sm:text-base font-bold uppercase tracking-wider text-emerald-200 hover:bg-emerald-500/30 active:scale-[0.97]"
                       >
                         Call {Math.min(mySpendable, callDue)}
                       </button>
@@ -2052,7 +2071,7 @@ export default function SabaccGame() {
                           sound('check');
                           socket?.emit('betAction', { action: 'check' });
                         }}
-                        className="sw-cut-sm min-h-[52px] border border-cyan-400/55 bg-cyan-500/20 font-mono text-xs sm:text-sm font-bold uppercase tracking-wider text-cyan-100 hover:bg-cyan-500/30 active:scale-[0.97]"
+                        className="sw-cut-sm min-h-[52px] border border-cyan-400/55 bg-cyan-500/20 font-mono text-sm sm:text-base font-bold uppercase tracking-wider text-cyan-100 hover:bg-cyan-500/30 active:scale-[0.97]"
                       >
                         Check
                       </button>
@@ -2067,7 +2086,7 @@ export default function SabaccGame() {
                           amount: String(activeBet),
                         });
                       }}
-                      className="sw-cut-sm min-h-[52px] bg-amber-400 font-mono text-xs sm:text-sm font-bold uppercase tracking-wider text-zinc-950 hover:bg-amber-300 active:scale-[0.97] disabled:bg-white/10 disabled:text-slate-500"
+                      className="sw-cut-sm min-h-[52px] bg-amber-400 font-mono text-sm sm:text-base font-bold uppercase tracking-wider text-zinc-950 hover:bg-amber-300 active:scale-[0.97] disabled:bg-white/10 disabled:text-slate-500"
                     >
                       {gameState.currentBet === 0 ? `Bet ${activeBet}` : `Raise +${activeBet}`}
                     </button>
@@ -2076,8 +2095,8 @@ export default function SabaccGame() {
               );
             })()
           ) : (
-            <div className="flex min-h-[44px] w-full items-center justify-between font-mono text-xs">
-              <div className="flex items-center gap-2.5 text-slate-300">
+            <div className="flex min-h-[46px] w-full items-center justify-between font-mono text-sm">
+              <div className="flex items-center gap-2.5 text-slate-200">
                 <span
                   className={`h-2 w-2 rotate-45 ${
                     isHandInPlay ? 'animate-pulse bg-cyan-400' : 'bg-amber-400/70'
@@ -2101,7 +2120,7 @@ export default function SabaccGame() {
                 <div className="relative">
                   <button
                     onClick={() => setShowEmotes(v => !v)}
-                    className="sw-cut-sm flex min-h-[40px] items-center gap-1.5 border border-white/15 bg-white/[0.04] px-3.5 text-xs uppercase tracking-wider text-slate-200 hover:border-amber-400/40 hover:text-amber-300"
+                    className="sw-cut-sm flex min-h-[42px] items-center gap-1.5 border border-white/15 bg-white/[0.04] px-3.5 text-xs sm:text-sm font-semibold uppercase tracking-wider text-slate-200 hover:border-amber-400/40 hover:text-amber-300"
                   >
                     <Smile className="h-4 w-4" /> Quip
                   </button>

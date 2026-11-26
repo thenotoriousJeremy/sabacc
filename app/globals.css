@@ -11,6 +11,13 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Boost root rem scale on mobile viewports so condensed sci-fi fonts read crisply at arm's length */
+@media (max-width: 640px) {
+  html {
+    font-size: 17px;
+  }
+}
+
 button,
 a,
 [role="button"] {

@@ -40,7 +40,7 @@ export function RulesDrawer({
             >
               <div className="mb-4 flex items-center justify-between border-b border-white/10 pb-3">
                 <div>
-                  <div className="font-mono text-[9px] uppercase tracking-[0.3em] text-cyan-300/70">
+                  <div className="font-mono text-xs uppercase tracking-[0.22em] text-cyan-300/75">
                     HOLOCRON REFERENCE
                   </div>
                   <h2 className="font-mono text-lg font-bold uppercase tracking-widest text-amber-400">
@@ -54,16 +54,16 @@ export function RulesDrawer({
                         onClose();
                         onOpenTutorial();
                       }}
-                      className="sw-cut-sm min-h-[40px] border border-amber-400/50 bg-amber-500/15 px-3 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-300 hover:bg-amber-500/25"
+                      className="sw-cut-sm min-h-[42px] border border-amber-400/50 bg-amber-500/15 px-3 font-mono text-xs font-bold uppercase tracking-wider text-amber-300 hover:bg-amber-500/25"
                     >
-                      Interactive Tutorial
+                      Tutorial
                     </button>
                   )}
                   <button
                     onClick={onTogglePin}
-                    className="sw-cut-sm hidden sm:flex min-h-[40px] items-center gap-1.5 border border-white/15 bg-white/5 px-3 font-mono text-[10px] uppercase tracking-wider text-slate-300 hover:text-amber-300"
+                    className="sw-cut-sm hidden sm:flex min-h-[42px] items-center gap-1.5 border border-white/15 bg-white/5 px-3 font-mono text-xs uppercase tracking-wider text-slate-300 hover:text-amber-300"
                   >
-                    <Pin className="h-3 w-3" /> Pin
+                    <Pin className="h-3.5 w-3.5" /> Pin
                   </button>
                   <button
                     onClick={onClose}
@@ -75,11 +75,11 @@ export function RulesDrawer({
                 </div>
               </div>
 
-              <div className="space-y-5 text-xs leading-relaxed text-slate-300">
+              <div className="space-y-5 text-sm leading-relaxed text-slate-200">
                 {/* 1. Objective & Deck */}
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="sw-cut-sm border border-white/10 bg-black/50 p-3.5">
-                    <h3 className="mb-1 font-mono text-[10px] font-bold uppercase tracking-widest text-amber-400">
+                    <h3 className="mb-1 font-mono text-xs font-bold uppercase tracking-widest text-amber-400">
                       The Objective
                     </h3>
                     <p>
@@ -89,7 +89,7 @@ export function RulesDrawer({
                     </p>
                   </div>
                   <div className="sw-cut-sm border border-white/10 bg-black/50 p-3.5">
-                    <h3 className="mb-1 font-mono text-[10px] font-bold uppercase tracking-widest text-cyan-300">
+                    <h3 className="mb-1 font-mono text-xs font-bold uppercase tracking-widest text-cyan-300">
                       The 62-Card Deck
                     </h3>
                     <p>
@@ -102,10 +102,10 @@ export function RulesDrawer({
 
                 {/* 2. Round Structure & All 4 Card Actions */}
                 <div className="sw-cut-sm border border-white/10 bg-black/50 p-3.5">
-                  <h3 className="mb-2 font-mono text-[10px] font-bold uppercase tracking-widest text-amber-400">
+                  <h3 className="mb-2 font-mono text-xs font-bold uppercase tracking-widest text-amber-400">
                     Round Flow (3 Rounds per Hand)
                   </h3>
-                  <ul className="space-y-1.5 text-[11px]">
+                  <ul className="space-y-1.5 text-xs sm:text-sm">
                     <li>
                       <strong className="text-white">1. Antes & Deal:</strong> Each player pays the Hand Ante into the{' '}
                       <span className="text-amber-300">Hand Pot</span> and the Sabacc Ante into the{' '}
@@ -136,31 +136,31 @@ export function RulesDrawer({
 
                 {/* 3. Full 13-Rank Hierarchy */}
                 <div>
-                  <h3 className="mb-2 font-mono text-[10px] font-bold uppercase tracking-widest text-amber-400">
+                  <h3 className="mb-2 font-mono text-xs font-bold uppercase tracking-widest text-amber-400">
                     Complete 13-Hand Hierarchy (Highest → Lowest)
                   </h3>
                   <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
                     {HAND_CODEX_META.map((h, i) => (
                       <div
                         key={h.key}
-                        className="sw-cut-sm flex flex-col justify-between border border-white/10 bg-black/50 px-3 py-2"
+                        className="sw-cut-sm flex flex-col justify-between border border-white/10 bg-black/50 px-3 py-2.5"
                       >
-                        <div className="flex items-center justify-between gap-2 font-mono text-[11px]">
+                        <div className="flex items-center justify-between gap-2 font-mono text-xs sm:text-sm">
                           <span>
-                            <span className="mr-1.5 text-white/35">{i + 1}.</span>
+                            <span className="mr-1.5 text-white/45">{i + 1}.</span>
                             <strong className={h.winsSabaccPot ? 'text-amber-300' : 'text-white'}>
                               {h.name}
                             </strong>
                           </span>
                           {h.winsSabaccPot && (
-                            <span className="text-[9px] uppercase tracking-wider text-rose-400">
+                            <span className="text-xs uppercase tracking-wider text-rose-400">
                               +Sabacc Pot
                             </span>
                           )}
                         </div>
-                        <div className="mt-0.5 flex items-center justify-between text-[10px] text-slate-400">
+                        <div className="mt-0.5 flex items-center justify-between text-xs text-slate-300">
                           <span>{h.formula}</span>
-                          <span className="font-mono text-cyan-300/75">{h.example}</span>
+                          <span className="font-mono text-cyan-300/85">{h.example}</span>
                         </div>
                       </div>
                     ))}

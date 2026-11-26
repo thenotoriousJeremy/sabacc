@@ -214,10 +214,26 @@ async function bootstrap() {
   }
 
   expressApp.disable('x-powered-by');
-  expressApp.use((_req, res, next) => {
+  expressApp.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+    const origin = req.headers.origin;
+    const fwdHost = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+      .split(',')[0]
+      .trim();
+    if (origin && isAllowedOrigin(origin, configStore.get().publicUrl, fwdHost)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Vary', 'Origin');
+    }
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
     next();
   });
   expressApp.use(express.json({ limit: '32kb' }));
@@ -637,7 +653,18 @@ async function bootstrap() {
       res.status(401).json({ error: 'Authentication required' });
       return;
     }
-    res.json({ port, addresses: localAddresses(), publicUrl: configStore.get().publicUrl });
+    const configuredPublicUrl = configStore.get().publicUrl;
+    const resolvedSite = resolveSiteUrl(req);
+    const nonLoopbackSite =
+      resolvedSite && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(resolvedSite)
+        ? resolvedSite
+        : configuredPublicUrl;
+    res.json({
+      port,
+      addresses: localAddresses(),
+      publicUrl: nonLoopbackSite,
+      configuredPublicUrl,
+    });
   });
 
   expressApp.get('/api/lobby', (req, res) => {
@@ -1628,10 +1655,13 @@ async function bootstrap() {
 }
 
 function localAddresses(): string[] {
-  return Object.values(networkInterfaces())
+  const all = Object.values(networkInterfaces())
     .flat()
     .filter((info): info is NetworkInterfaceInfo => !!info && info.family === 'IPv4' && !info.internal)
     .map(info => info.address);
+  // Prefer physical LAN subnets (192.168.x.x / 10.x.x.x) ahead of Docker virtual bridges (172.17-31.x.x):
+  const nonDocker = all.filter(ip => !/^172\.(1[6-9]|2\d|3[01])\./.test(ip));
+  return nonDocker.length > 0 ? [...nonDocker, ...all.filter(ip => !nonDocker.includes(ip))] : all;
 }
 
 bootstrap().catch(err => {

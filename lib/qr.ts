@@ -16,6 +16,7 @@ const VERSIONS_L: VersionSpec[] = [
   { version: 2, size: 25, dataCodewords: 34, ecCodewords: 10, hasAlignment: true },
   { version: 3, size: 29, dataCodewords: 55, ecCodewords: 15, hasAlignment: true },
   { version: 4, size: 33, dataCodewords: 80, ecCodewords: 20, hasAlignment: true },
+  { version: 5, size: 37, dataCodewords: 108, ecCodewords: 26, hasAlignment: true },
 ];
 
 const GF_EXP = new Uint8Array(512);

@@ -100,10 +100,10 @@ export function CommandDrawer({
             {/* Header */}
             <div className="mb-3 flex items-center justify-between border-b border-white/10 pb-3">
               <div>
-                <div className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-300/70">
+                <div className="font-mono text-xs uppercase tracking-[0.22em] text-cyan-300/75">
                   TABLE MENU
                 </div>
-                <div className="font-mono text-sm font-bold uppercase tracking-widest text-amber-400">
+                <div className="font-mono text-base font-bold uppercase tracking-widest text-amber-400">
                   {gameState.mode === 'party' ? `Room ${gameState.roomId}` : 'Solo Holotable'}
                 </div>
               </div>
@@ -123,12 +123,12 @@ export function CommandDrawer({
                   onClose();
                   onOpenDossier();
                 }}
-                className="sw-cut-sm flex min-h-[56px] flex-col items-start justify-center gap-0.5 border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-left hover:bg-amber-500/20"
+                className="sw-cut-sm flex min-h-[60px] flex-col items-start justify-center gap-0.5 border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-left hover:bg-amber-500/20"
               >
-                <span className="flex items-center gap-1.5 font-mono text-xs font-bold uppercase text-white">
+                <span className="flex items-center gap-1.5 font-mono text-sm font-bold uppercase text-white">
                   <Award className="h-4 w-4 text-amber-400" /> Profile
                 </span>
-                <span className="font-mono text-[10px] text-amber-300/80">Vault, Chart &amp; Skins</span>
+                <span className="font-mono text-xs text-amber-300/85">Vault, Chart &amp; Skins</span>
               </button>
 
               <button
@@ -136,12 +136,12 @@ export function CommandDrawer({
                   onClose();
                   onOpenLedger();
                 }}
-                className="sw-cut-sm flex min-h-[56px] flex-col items-start justify-center gap-0.5 border border-cyan-400/25 bg-cyan-500/10 px-3 py-2 text-left hover:bg-cyan-500/20"
+                className="sw-cut-sm flex min-h-[60px] flex-col items-start justify-center gap-0.5 border border-cyan-400/25 bg-cyan-500/10 px-3 py-2 text-left hover:bg-cyan-500/20"
               >
-                <span className="flex items-center gap-1.5 font-mono text-xs font-bold uppercase text-white">
+                <span className="flex items-center gap-1.5 font-mono text-sm font-bold uppercase text-white">
                   <Scale className="h-4 w-4 text-cyan-300" /> Table Rules
                 </span>
-                <span className="font-mono text-[10px] text-cyan-300/80">Scores &amp; Stakes</span>
+                <span className="font-mono text-xs text-cyan-300/85">Scores &amp; Stakes</span>
               </button>
 
               <button
@@ -149,7 +149,7 @@ export function CommandDrawer({
                   onClose();
                   onOpenTutorial();
                 }}
-                className="sw-cut-sm flex min-h-[48px] items-center gap-2 border border-white/12 bg-white/[0.04] px-3 font-mono text-xs uppercase text-white/85 hover:bg-white/10 active:scale-[0.98]"
+                className="sw-cut-sm flex min-h-[48px] items-center gap-2 border border-white/12 bg-white/[0.04] px-3 font-mono text-xs sm:text-sm font-semibold uppercase text-white/90 hover:bg-white/10 active:scale-[0.98]"
               >
                 <HelpCircle className="h-4 w-4 text-amber-300" /> Tutorial
               </button>
@@ -160,7 +160,7 @@ export function CommandDrawer({
                     onClose();
                     onOpenQr();
                   }}
-                  className="sw-cut-sm flex min-h-[48px] items-center gap-2 border border-amber-400/35 bg-amber-500/10 px-3 font-mono text-xs uppercase text-amber-300 hover:bg-amber-500/20 active:scale-[0.98]"
+                  className="sw-cut-sm flex min-h-[48px] items-center gap-2 border border-amber-400/35 bg-amber-500/10 px-3 font-mono text-xs sm:text-sm font-bold uppercase text-amber-300 hover:bg-amber-500/20 active:scale-[0.98]"
                 >
                   <QrCode className="h-4 w-4" /> Invite QR
                 </button>
@@ -170,7 +170,7 @@ export function CommandDrawer({
                     onClose();
                     onOpenRules();
                   }}
-                  className="sw-cut-sm flex min-h-[48px] items-center gap-2 border border-white/12 bg-white/[0.04] px-3 font-mono text-xs uppercase text-white/80 hover:bg-white/10 active:scale-[0.98]"
+                  className="sw-cut-sm flex min-h-[48px] items-center gap-2 border border-white/12 bg-white/[0.04] px-3 font-mono text-xs sm:text-sm font-semibold uppercase text-white/85 hover:bg-white/10 active:scale-[0.98]"
                 >
                   <ShieldCheck className="h-4 w-4 text-cyan-300" /> Hand Ranks
                 </button>
@@ -186,7 +186,7 @@ export function CommandDrawer({
                       colorMode: dossier.colorMode === 'light' ? 'dark' : 'light',
                     })
                   }
-                  className="sw-cut-sm flex min-h-[44px] flex-1 items-center justify-center gap-1.5 border border-white/15 bg-black/40 font-mono text-[11px] uppercase text-slate-200 hover:border-amber-400/50"
+                  className="sw-cut-sm flex min-h-[44px] flex-1 items-center justify-center gap-1.5 border border-white/15 bg-black/40 font-mono text-xs uppercase text-slate-200 hover:border-amber-400/50"
                 >
                   {dossier.colorMode === 'light' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
                   {dossier.colorMode === 'light' ? 'Dark' : 'Light'}
@@ -195,16 +195,16 @@ export function CommandDrawer({
                 {gameState.mode === 'party' && (
                   <button
                     onClick={() => onUpdateDossier({ chatEnabled: !dossier.chatEnabled })}
-                    className={`sw-cut-sm flex min-h-[44px] flex-1 items-center justify-center gap-1.5 border font-mono text-[11px] uppercase ${
+                    className={`sw-cut-sm flex min-h-[44px] flex-1 items-center justify-center gap-1.5 border font-mono text-xs uppercase ${
                       dossier.chatEnabled
                         ? 'border-cyan-400/40 bg-cyan-500/15 text-cyan-200'
                         : 'border-white/15 bg-black/40 text-slate-400'
                     }`}
                   >
                     {dossier.chatEnabled ? (
-                      <MessageSquare className="h-3.5 w-3.5" />
+                      <MessageSquare className="h-4 w-4" />
                     ) : (
-                      <MessageSquareOff className="h-3.5 w-3.5" />
+                      <MessageSquareOff className="h-4 w-4" />
                     )}
                     {dossier.chatEnabled ? 'Chat On' : 'Chat Off'}
                   </button>
@@ -216,9 +216,9 @@ export function CommandDrawer({
                       onClose();
                       onOpenAdmin();
                     }}
-                    className="sw-cut-sm flex min-h-[44px] items-center justify-center gap-1.5 border border-white/15 bg-black/40 px-3 font-mono text-[11px] uppercase text-slate-200 hover:border-cyan-400/50"
+                    className="sw-cut-sm flex min-h-[44px] items-center justify-center gap-1.5 border border-white/15 bg-black/40 px-3 font-mono text-xs uppercase text-slate-200 hover:border-cyan-400/50"
                   >
-                    <Shield className="h-3.5 w-3.5 text-amber-400" /> Admin
+                    <Shield className="h-4 w-4 text-amber-400" /> Admin
                   </button>
                 )}
               </div>
@@ -235,13 +235,13 @@ export function CommandDrawer({
                   <button
                     key={opt.label}
                     onClick={() => onUpdateDossier({ volume: opt.val })}
-                    className={`sw-cut-sm flex min-h-[42px] items-center justify-center gap-1 border font-mono text-[10px] uppercase active:scale-[0.98] ${
+                    className={`sw-cut-sm flex min-h-[44px] items-center justify-center gap-1.5 border font-mono text-xs uppercase active:scale-[0.98] ${
                       opt.active
                         ? 'border-amber-400 bg-amber-500/20 font-bold text-amber-300'
                         : 'border-white/12 bg-black/40 text-slate-400 hover:text-white'
                     }`}
                   >
-                    {opt.val === 0 ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
+                    {opt.val === 0 ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
                     <span>{opt.label.replace('Sound ', '')}</span>
                   </button>
                 ))}
@@ -254,18 +254,18 @@ export function CommandDrawer({
                       onToggleSpectator();
                       onClose();
                     }}
-                    className="sw-cut-sm flex min-h-[40px] flex-1 items-center justify-center gap-1.5 border border-white/12 bg-black/40 font-mono text-[11px] uppercase text-white/75 hover:text-white"
+                    className="sw-cut-sm flex min-h-[44px] flex-1 items-center justify-center gap-1.5 border border-white/12 bg-black/40 font-mono text-xs uppercase text-white/80 hover:text-white"
                   >
-                    <Eye className="h-3.5 w-3.5" /> {isSpectator ? 'Join Next Hand' : 'Spectate'}
+                    <Eye className="h-4 w-4" /> {isSpectator ? 'Join Next Hand' : 'Spectate'}
                   </button>
                   <button
                     onClick={() => {
                       onClose();
                       onOpenLegal();
                     }}
-                    className="sw-cut-sm flex min-h-[40px] items-center justify-center gap-1.5 border border-white/12 bg-black/40 px-3 font-mono text-[11px] uppercase text-white/75 hover:text-white"
+                    className="sw-cut-sm flex min-h-[44px] items-center justify-center gap-1.5 border border-white/12 bg-black/40 px-3 font-mono text-xs uppercase text-white/80 hover:text-white"
                   >
-                    <ShieldCheck className="h-3.5 w-3.5 text-cyan-300" /> Safety
+                    <ShieldCheck className="h-4 w-4 text-cyan-300" /> Safety
                   </button>
                 </div>
               )}
@@ -273,12 +273,12 @@ export function CommandDrawer({
 
             {/* Activity Log & Filtered Multiplayer Chat */}
             <div className="mt-3 flex min-h-0 flex-1 flex-col">
-              <span className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.22em] text-white/40">
+              <span className="mb-1.5 font-mono text-xs uppercase tracking-[0.2em] text-white/50">
                 Table Log
               </span>
-              <div className="flex-1 space-y-1.5 overflow-y-auto rounded border border-white/10 bg-black/55 p-3 font-mono text-[11px] custom-scrollbar">
+              <div className="flex-1 space-y-1.5 overflow-y-auto rounded border border-white/10 bg-black/55 p-3 font-mono text-xs custom-scrollbar">
                 {gameState.logs.slice(-16).map((log, i) => (
-                  <div key={`l-${i}`} className="leading-snug text-slate-400">
+                  <div key={`l-${i}`} className="leading-snug text-slate-300">
                     {log}
                   </div>
                 ))}
@@ -298,11 +298,11 @@ export function CommandDrawer({
                     value={chatMessage}
                     onChange={e => onChatChange(e.target.value)}
                     placeholder="Message table..."
-                    className="sw-cut-sm min-h-[44px] flex-1 border border-white/15 bg-black/60 px-3 font-mono text-xs text-white focus:border-cyan-400 focus:outline-none"
+                    className="sw-cut-sm min-h-[46px] flex-1 border border-white/15 bg-black/60 px-3 font-mono text-base text-white focus:border-cyan-400 focus:outline-none"
                   />
                   <button
                     type="submit"
-                    className="sw-cut-sm min-h-[44px] bg-cyan-400 px-4 font-mono text-xs font-bold uppercase text-zinc-950 hover:bg-cyan-300"
+                    className="sw-cut-sm min-h-[46px] bg-cyan-400 px-4 font-mono text-xs font-bold uppercase text-zinc-950 hover:bg-cyan-300"
                   >
                     Send
                   </button>
@@ -312,7 +312,7 @@ export function CommandDrawer({
 
             <button
               onClick={onLeaveRoom}
-              className="sw-cut-sm mt-3 flex min-h-[46px] w-full items-center justify-center gap-2 border border-rose-500/35 bg-rose-950/30 font-mono text-xs font-bold uppercase tracking-widest text-rose-300 hover:bg-rose-900/40"
+              className="sw-cut-sm mt-3 flex min-h-[48px] w-full items-center justify-center gap-2 border border-rose-500/35 bg-rose-950/30 font-mono text-sm font-bold uppercase tracking-widest text-rose-300 hover:bg-rose-900/40"
             >
               <LogOut className="h-4 w-4" /> Leave Table
             </button>

@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Check, Lock, RefreshCw, Send, Shield, Trash2, X } from 'lucide-react';
+import { apiUrl } from '@/lib/api-base';
 import { StakesTier } from '@/lib/game-logic';
 
 interface AdminOverview {
@@ -73,7 +74,7 @@ export function AdminModal({
 
   const fetchOverview = useCallback(async () => {
     try {
-      const resp = await fetch('/api/admin/overview');
+      const resp = await fetch(apiUrl('/api/admin/overview'), { credentials: 'include' });
       if (!resp.ok) return;
       const data = (await resp.json()) as AdminOverview;
       setOverview(data);
@@ -99,9 +100,10 @@ export function AdminModal({
   const handleUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    const resp = await fetch('/api/admin/login', {
+    const resp = await fetch(apiUrl('/api/admin/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ password: adminPassword }),
     });
     const data = (await resp.json()) as { ok?: boolean; error?: string };
@@ -131,9 +133,10 @@ export function AdminModal({
     else if (newSitePassword.trim()) body.newSitePassword = newSitePassword.trim();
     if (webhookInput.trim()) body.discordWebhookUrl = webhookInput.trim();
 
-    const resp = await fetch('/api/admin/config', {
+    const resp = await fetch(apiUrl('/api/admin/config'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(body),
     });
     if (!resp.ok) {
@@ -151,7 +154,10 @@ export function AdminModal({
   const handleTestDiscord = async () => {
     setError(null);
     setStatusMsg(null);
-    const resp = await fetch('/api/admin/discord-test', { method: 'POST' });
+    const resp = await fetch(apiUrl('/api/admin/discord-test'), {
+      method: 'POST',
+      credentials: 'include',
+    });
     const data = (await resp.json()) as { ok?: boolean; error?: string };
     if (!resp.ok || !data.ok) {
       setError(data.error ?? 'Discord test ping failed.');
@@ -162,9 +168,10 @@ export function AdminModal({
   };
 
   const handleCloseRoom = async (roomId: string) => {
-    await fetch('/api/admin/close-room', {
+    await fetch(apiUrl('/api/admin/close-room'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ roomId }),
     });
     fetchOverview();

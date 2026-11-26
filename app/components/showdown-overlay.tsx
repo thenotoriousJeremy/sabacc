@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { Check, Coins, Copy, Flame, Play, Rocket, RotateCcw, Send, Zap } from 'lucide-react';
+import { apiUrl } from '@/lib/api-base';
 import { formatKesselShareCard } from '@/lib/daily-seed';
 import { ClientGameState, GameMode } from '@/lib/game-logic';
 
@@ -55,7 +56,7 @@ export function ShowdownOverlay({
       animate={{ opacity: 1, scale: 1 }}
       className="sw-cut z-20 mx-auto flex w-full max-w-md flex-col items-center gap-2.5 border border-amber-400/50 bg-[#070b12]/92 px-5 py-4 text-center shadow-[0_0_55px_rgba(245,158,11,0.22)] backdrop-blur-xl"
     >
-      <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.32em] text-cyan-300/75">
+      <div className="flex items-center gap-2 font-mono text-xs uppercase tracking-[0.26em] text-cyan-300/85">
         <span>
           {tour?.tourCompleted
             ? 'CHAMPIONSHIP WON'
@@ -68,21 +69,21 @@ export function ShowdownOverlay({
                   : 'SHOWDOWN'}
         </span>
         {currentStreak >= 2 && (
-          <span className="inline-flex items-center gap-1 rounded border border-orange-400/50 bg-orange-500/20 px-1.5 py-0.5 tracking-wider text-orange-300">
-            <Flame className="h-3 w-3" /> {currentStreak}×
+          <span className="inline-flex items-center gap-1 rounded border border-orange-400/50 bg-orange-500/20 px-2 py-0.5 tracking-wider text-orange-300">
+            <Flame className="h-3.5 w-3.5" /> {currentStreak}×
           </span>
         )}
       </div>
 
       {topStanding ? (
         <div>
-          <div className="text-xl sm:text-2xl font-bold uppercase tracking-wider text-amber-300">
+          <div className="text-2xl sm:text-3xl font-bold uppercase tracking-wider text-amber-300">
             {result!.payouts[0]?.winnerNames.join(' & ') ?? topStanding.name}
           </div>
-          <div className="font-mono text-xs text-cyan-200/90">{topStanding.evaluation.rankName}</div>
+          <div className="font-mono text-sm text-cyan-200">{topStanding.evaluation.rankName}</div>
         </div>
       ) : (
-        <div className="font-mono text-sm text-white/70">Pot Uncontested</div>
+        <div className="font-mono text-base text-white/75">Pot Uncontested</div>
       )}
 
       {/* Crisp Payout Pills + Personal Hand Net */}
@@ -90,7 +91,7 @@ export function ShowdownOverlay({
         {result?.payouts.map((pay, idx) => (
           <span
             key={idx}
-            className={`sw-cut-sm border px-2.5 py-0.5 font-mono text-[10px] uppercase ${
+            className={`sw-cut-sm border px-3 py-1 font-mono text-xs font-bold uppercase ${
               pay.label === 'Sabacc Pot'
                 ? 'border-rose-400/45 bg-rose-500/15 text-rose-200'
                 : 'border-amber-400/40 bg-amber-500/15 text-amber-200'
@@ -101,7 +102,7 @@ export function ShowdownOverlay({
         ))}
         {myNetDelta !== null && !me?.isSpectator && (
           <span
-            className={`sw-cut-sm border px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase ${
+            className={`sw-cut-sm border px-3 py-1 font-mono text-xs font-bold uppercase ${
               myNetDelta > 0
                 ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-300'
                 : myNetDelta < 0
@@ -116,8 +117,8 @@ export function ShowdownOverlay({
 
       {/* Carryover Sabacc Pot Hook ("One More Hand" Magnet) */}
       {result?.sabaccPotCarried && gameState.sabaccPot > 0 && !daily?.finished && !tour?.runFailed && (
-        <div className="sw-cut-sm flex items-center gap-1.5 border border-rose-400/40 bg-rose-500/10 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-rose-200">
-          <Zap className="h-3 w-3 text-rose-400" />
+        <div className="sw-cut-sm flex items-center gap-1.5 border border-rose-400/40 bg-rose-500/10 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-rose-200">
+          <Zap className="h-3.5 w-3.5 text-rose-400" />
           <span>{gameState.sabaccPot} CR Sabacc Pot rolls into next hand</span>
         </div>
       )}
@@ -153,9 +154,10 @@ export function ShowdownOverlay({
               <button
                 disabled={postedDiscord}
                 onClick={async () => {
-                  const resp = await fetch('/api/discord/share', {
+                  const resp = await fetch(apiUrl('/api/discord/share'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
                     body: JSON.stringify({ pilot: me?.name ?? 'Pilot', shareText: shareCardText }),
                   });
                   if (resp.ok) setPostedDiscord(true);
@@ -242,10 +244,10 @@ export function ShowdownOverlay({
           <button
             onClick={onNextHand}
             disabled={me?.isReady && !me?.isSpectator}
-            className="sw-cut-sm flex flex-1 items-center justify-center gap-2 bg-amber-400 py-2.5 font-mono text-xs font-bold uppercase tracking-[0.22em] text-zinc-950 transition-all hover:bg-amber-300 disabled:bg-white/10 disabled:text-white/40"
+            className="sw-cut-sm flex min-h-[50px] flex-1 items-center justify-center gap-2 bg-amber-400 font-mono text-sm sm:text-base font-bold uppercase tracking-[0.18em] text-zinc-950 transition-all hover:bg-amber-300 disabled:bg-white/10 disabled:text-white/40"
           >
-            <Play className="h-3.5 w-3.5 fill-current" />
-            {me?.isReady && !me?.isSpectator ? 'Waiting on Table...' : 'Next Hand [Space]'}
+            <Play className="h-4 w-4 fill-current" />
+            {me?.isReady && !me?.isSpectator ? 'Waiting on Table...' : 'Next Hand'}
           </button>
         )}
       </div>

@@ -44,7 +44,7 @@ export function LegalModal({ open, onClose, onEraseAllData }: LegalModalProps) {
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <div className="flex items-center gap-2.5">
                 <ShieldCheck className="h-5 w-5 text-cyan-300" />
-                <h2 className="font-mono text-sm font-bold uppercase tracking-widest text-amber-400">
+                <h2 className="font-mono text-base font-bold uppercase tracking-widest text-amber-400">
                   Privacy, Safety &amp; Fair Play
                 </h2>
               </div>
@@ -57,9 +57,9 @@ export function LegalModal({ open, onClose, onEraseAllData }: LegalModalProps) {
               </button>
             </div>
 
-            <div className="space-y-4 text-xs leading-relaxed text-slate-300">
+            <div className="space-y-4 text-sm leading-relaxed text-slate-200">
               <div className="sw-cut-sm border border-amber-400/30 bg-amber-500/10 p-3.5">
-                <div className="font-mono text-[10px] font-bold uppercase tracking-wider text-amber-300">
+                <div className="font-mono text-xs font-bold uppercase tracking-wider text-amber-300">
                   Play-Only Virtual Credits (Zero Real-Money Value)
                 </div>
                 <p className="mt-1">
@@ -69,7 +69,7 @@ export function LegalModal({ open, onClose, onEraseAllData }: LegalModalProps) {
               </div>
 
               <div className="space-y-1.5">
-                <div className="font-mono text-[10px] font-bold uppercase tracking-wider text-cyan-300">
+                <div className="font-mono text-xs font-bold uppercase tracking-wider text-cyan-300">
                   Privacy &amp; Data Storage
                 </div>
                 <p>
@@ -80,7 +80,7 @@ export function LegalModal({ open, onClose, onEraseAllData }: LegalModalProps) {
               </div>
 
               <div className="space-y-1.5">
-                <div className="font-mono text-[10px] font-bold uppercase tracking-wider text-cyan-300">
+                <div className="font-mono text-xs font-bold uppercase tracking-wider text-cyan-300">
                   Multiplayer Safety
                 </div>
                 <p>

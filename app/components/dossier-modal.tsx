@@ -360,11 +360,11 @@ export function DossierModal({
                 </div>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="truncate font-mono text-sm sm:text-base font-bold uppercase tracking-widest text-amber-400">
+                    <h2 className="truncate font-mono text-base sm:text-lg font-bold uppercase tracking-widest text-amber-400">
                       {dossier.callsign || 'PILOT'} {'//'} DOSSIER
                     </h2>
                     <span
-                      className={`rounded border px-2 py-0.5 font-mono text-[10px] font-bold uppercase ${rep.badgeColor}`}
+                      className={`rounded border px-2 py-0.5 font-mono text-xs font-bold uppercase ${rep.badgeColor}`}
                     >
                       Lv.{rep.level} {rep.title}
                     </span>
@@ -376,7 +376,7 @@ export function DossierModal({
                         style={{ width: `${rep.pct}%` }}
                       />
                     </div>
-                    <span className="font-mono text-[10px] text-white/50">
+                    <span className="font-mono text-xs text-white/60">
                       {rep.nextXp ? `${rep.xp}/${rep.nextXp} REP` : `${rep.xp} REP (MAX)`}
                     </span>
                   </div>
@@ -389,7 +389,7 @@ export function DossierModal({
                       onClose();
                       onOpenLegal();
                     }}
-                    className="min-h-[44px] px-2.5 font-mono text-[10px] uppercase tracking-wider text-slate-400 hover:text-rose-300"
+                    className="min-h-[44px] px-2.5 font-mono text-xs uppercase tracking-wider text-slate-300 hover:text-rose-300"
                   >
                     Data &amp; Reset
                   </button>
@@ -425,13 +425,13 @@ export function DossierModal({
                   <button
                     key={t.id}
                     onClick={() => setTab(t.id)}
-                    className={`flex items-center justify-center gap-1.5 border-b-2 px-2 py-2.5 font-mono text-[11px] font-bold uppercase tracking-wider transition-colors ${
+                    className={`flex min-h-[44px] items-center justify-center gap-1.5 border-b-2 px-2 py-2.5 font-mono text-xs font-bold uppercase tracking-wider transition-colors ${
                       active
                         ? 'border-amber-400 text-amber-300'
-                        : 'border-transparent text-white/45 hover:text-white/80'
+                        : 'border-transparent text-white/55 hover:text-white/85'
                     }`}
                   >
-                    <Icon className="h-3.5 w-3.5 shrink-0" />
+                    <Icon className="h-4 w-4 shrink-0" />
                     <span className="hidden sm:inline">{t.label}</span>
                     <span className="sm:hidden">{t.short}</span>
                   </button>
@@ -446,19 +446,19 @@ export function DossierModal({
                   {/* Top Credit Summary Cards */}
                   <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
                     <div className="sw-cut-sm border border-amber-400/35 bg-amber-500/10 p-3">
-                      <div className="font-mono text-[10px] uppercase tracking-widest text-amber-200/70">
+                      <div className="font-mono text-xs uppercase tracking-wider text-amber-200/80">
                         Smuggler Vault
                       </div>
                       <div className="mt-1 font-mono text-xl font-black text-amber-300">
                         {dossier.vaultCredits.toLocaleString()} CR
                       </div>
-                      <div className="font-mono text-[10px] text-white/45">
+                      <div className="font-mono text-xs text-white/55">
                         Peak: {dossier.peakVaultCredits.toLocaleString()} CR
                       </div>
                     </div>
 
                     <div className="sw-cut-sm border border-cyan-400/30 bg-cyan-500/10 p-3">
-                      <div className="font-mono text-[10px] uppercase tracking-widest text-cyan-200/70">
+                      <div className="font-mono text-xs uppercase tracking-wider text-cyan-200/80">
                         Honest Career Net
                       </div>
                       <div
@@ -471,31 +471,31 @@ export function DossierModal({
                           : dossier.careerNetCredits.toLocaleString()}{' '}
                         CR
                       </div>
-                      <div className="font-mono text-[10px] text-white/45">
+                      <div className="font-mono text-xs text-white/55">
                         Pure pot P&amp;L ({dossier.handsPlayed} hands)
                       </div>
                     </div>
 
                     <div className="sw-cut-sm border border-white/12 bg-black/50 p-3">
-                      <div className="font-mono text-[10px] uppercase tracking-widest text-white/45">
+                      <div className="font-mono text-xs uppercase tracking-wider text-white/55">
                         Win Rate &amp; Streak
                       </div>
                       <div className="mt-1 font-mono text-xl font-black text-white">
                         {winRate}%
                       </div>
-                      <div className="font-mono text-[10px] text-amber-300">
+                      <div className="font-mono text-xs text-amber-300">
                         Best Streak: {dossier.bestStreak}× (Now {dossier.currentStreak}×)
                       </div>
                     </div>
 
                     <div className="sw-cut-sm border border-white/12 bg-black/50 p-3">
-                      <div className="font-mono text-[10px] uppercase tracking-widest text-white/45">
+                      <div className="font-mono text-xs uppercase tracking-wider text-white/55">
                         Biggest Pot / Jackpots
                       </div>
                       <div className="mt-1 font-mono text-xl font-black text-rose-300">
                         {dossier.biggestPotWon} CR
                       </div>
-                      <div className="font-mono text-[10px] text-white/45">
+                      <div className="font-mono text-xs text-white/55">
                         {dossier.sabaccPotsWon} Sabacc Pots • {dossier.cantinaTitlesWon} Tours
                       </div>
                     </div>

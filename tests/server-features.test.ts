@@ -4,12 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { parseCookies, verifySignedToken } from '../lib/auth';
+import { isLoopbackOrPackagedHost, normalizeBaseUrl } from '../lib/api-base';
 import { getDailyBounties, getRepProgress } from '../lib/bounties';
 import { analyzeZeroOuts, Card, CardSuit, CardType, ClientGameState, evaluateHand } from '../lib/game-logic';
 import { LocalGameTransport } from '../lib/local-transport';
 import { filterCallsign, filterProfanity } from '../lib/moderation';
 import { PilotRegistryStore } from '../lib/pilot-registry';
 import { claimDailyStipend, defaultDossier, settleShowdownToDossier } from '../lib/progression';
+import { encodeQrMatrix } from '../lib/qr';
 import { hashPassword, ServerConfigStore, verifyPassword } from '../lib/server-config';
 
 const makeCard = (id: string, value: number, suit = CardSuit.CIRCLE): Card => ({
@@ -280,4 +282,24 @@ test('UGC moderation masks profanity in chat and sanitizes offensive callsigns',
   assert.equal(filterProfanity('gg what a shit draw'), 'gg what a **** draw');
   assert.equal(filterCallsign('fuck', 'Pilot'), 'Pilot');
   assert.equal(filterCallsign('Lando', 'Pilot'), 'Lando');
+});
+
+test('API base normalizer and QR encoder handle configured mobile/custom-domain invite URLs', () => {
+  assert.equal(normalizeBaseUrl('sabacc.example.com:3000/'), 'http://sabacc.example.com:3000');
+  assert.equal(normalizeBaseUrl('https://sabacc.example.com///'), 'https://sabacc.example.com');
+  assert.equal(normalizeBaseUrl('   '), '');
+  assert.equal(isLoopbackOrPackagedHost('localhost'), true);
+  assert.equal(isLoopbackOrPackagedHost('127.0.0.1'), true);
+  assert.equal(isLoopbackOrPackagedHost('sabacc.example.com'), false);
+
+  const customDomainInvite = 'https://sabacc.my-cantina-holonet-server.example.com/?room=KSL94';
+  const matrixV4 = encodeQrMatrix(customDomainInvite);
+  assert.ok(matrixV4);
+  assert.equal(matrixV4.length, 33, '64-byte custom domain uses QR Version 4-L (33x33)');
+
+  const longTunnelInvite =
+    'https://sabacc-corellian-spike-cantina-holotable-tunnel.my-homelab-cluster.example.com/?room=KSL94';
+  const matrixV5 = encodeQrMatrix(longTunnelInvite);
+  assert.ok(matrixV5, 'QR encoder supports long custom domain URLs up to 106 bytes');
+  assert.equal(matrixV5.length, 37, '98-byte custom domain uses QR Version 5-L (37x37)');
 });
