@@ -28,6 +28,7 @@ export async function postDiscordEmbed(
     description: string;
     color?: number;
     url?: string;
+    avatarUrl?: string;
     fields?: { name: string; value: string; inline?: boolean }[];
     footer?: { text: string };
   }
@@ -49,6 +50,7 @@ export async function postDiscordEmbed(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         username: 'Cantina Holotable',
+        ...(embed.avatarUrl ? { avatar_url: embed.avatarUrl } : {}),
         embeds: [
           {
             color: embed.color ?? 0xf59e0b,

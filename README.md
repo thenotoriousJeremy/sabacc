@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="public/icon-transparent.svg" width="108" height="108" alt="Corellian Spike Sabacc Icon" />
+
 # Corellian Spike Sabacc
 
 **Self-hosted Star Wars card game for desktop, mobile PWA, and Android — with solo campaigns, daily seeded runs, persistent bankroll analytics, Discord table alerts, and OIDC SSO.**

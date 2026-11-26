@@ -1,8 +1,163 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
-  <rect width="256" height="256" rx="48" fill="#060910"/>
-  <polygon points="68,20 188,20 236,68 236,188 188,236 68,236 20,188 20,68" fill="#0c1522" stroke="#f59e0b" stroke-width="8"/>
-  <polygon points="128,44 204,128 128,212 52,128" fill="none" stroke="#22d3ee" stroke-width="6" opacity="0.85"/>
-  <polygon points="128,74 176,128 128,182 80,128" fill="#f59e0b" opacity="0.22"/>
-  <circle cx="128" cy="128" r="24" fill="none" stroke="#fbbf24" stroke-width="6"/>
-  <circle cx="128" cy="128" r="9" fill="#fbbf24"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Deep Outer Rim Holotable Vignette -->
+    <radialGradient id="bgGrad" cx="50%" cy="44%" r="68%">
+      <stop offset="0%" stop-color="#112031" />
+      <stop offset="52%" stop-color="#070c14" />
+      <stop offset="100%" stop-color="#030508" />
+    </radialGradient>
+
+    <!-- Ambient Gold & Cyan Backlight -->
+    <radialGradient id="auraGrad" cx="50%" cy="48%" r="44%">
+      <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.26" />
+      <stop offset="58%" stop-color="#22d3ee" stop-opacity="0.10" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Positive Card Face (Teal/Cobalt) -->
+    <linearGradient id="posFace" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0c3144" />
+      <stop offset="55%" stop-color="#061925" />
+      <stop offset="100%" stop-color="#030a10" />
+    </linearGradient>
+
+    <!-- Negative Card Face (Imperial Crimson) -->
+    <linearGradient id="negFace" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#3f0c1b" />
+      <stop offset="55%" stop-color="#1e060e" />
+      <stop offset="100%" stop-color="#0b0205" />
+    </linearGradient>
+
+    <!-- Hero Sylop Card Face (Obsidian & Burnished Gold) -->
+    <linearGradient id="sylopFace" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2d2009" />
+      <stop offset="50%" stop-color="#140e04" />
+      <stop offset="100%" stop-color="#070502" />
+    </linearGradient>
+
+    <!-- Metallic Gold Stroke & Crest -->
+    <linearGradient id="goldFoil" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fef08a" />
+      <stop offset="45%" stop-color="#fbbf24" />
+      <stop offset="100%" stop-color="#d97706" />
+    </linearGradient>
+
+    <filter id="cardShadow" x="-80%" y="-60%" width="260%" height="260%">
+      <feDropShadow dx="0" dy="14" stdDeviation="14" flood-color="#000000" flood-opacity="0.82" />
+    </filter>
+
+    <filter id="goldGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#fbbf24" flood-opacity="0.55" />
+    </filter>
+  </defs>
+
+  <!-- Full-bleed App Icon Base -->
+  <rect width="512" height="512" rx="108" fill="url(#bgGrad)" />
+  <rect width="512" height="512" rx="108" fill="url(#auraGrad)" />
+
+  <!-- Subtle Holotable Targeting Ring (Inside Safe Zone) -->
+  <circle cx="256" cy="256" r="196" fill="none" stroke="#22d3ee" stroke-opacity="0.16" stroke-width="2" stroke-dasharray="6 10" />
+  <circle cx="256" cy="256" r="172" fill="none" stroke="url(#goldFoil)" stroke-opacity="0.22" stroke-width="1.5" />
+
+  <!-- LEFT WING CARD: Positive (+6 Circle) -->
+  <g transform="translate(172, 266) rotate(-17)" filter="url(#cardShadow)">
+    <polygon
+      points="-44,-108 44,-108 74,-76 74,76 44,108 -44,108 -74,76 -74,-76"
+      fill="url(#posFace)"
+      stroke="#22d3ee"
+      stroke-width="5"
+    />
+    <polygon
+      points="-38,-96 38,-96 63,-70 63,70 38,96 -38,96 -63,70 -63,-70"
+      fill="none"
+      stroke="#67e8f9"
+      stroke-opacity="0.45"
+      stroke-width="1.8"
+    />
+    <polygon points="-44,-108 44,-108 56,-92 -56,-92" fill="#22d3ee" fill-opacity="0.32" />
+    <!-- Top-left corner + glyph -->
+    <g transform="translate(-38, -62)" stroke="#67e8f9" stroke-width="4.5" stroke-linecap="round">
+      <line x1="-9" y1="0" x2="9" y2="0" />
+      <line x1="0" y1="-9" x2="0" y2="9" />
+    </g>
+    <circle cx="-38" cy="-32" r="7" fill="none" stroke="#67e8f9" stroke-width="3" />
+  </g>
+
+  <!-- RIGHT WING CARD: Negative (-6 Triangle) -->
+  <g transform="translate(340, 266) rotate(17)" filter="url(#cardShadow)">
+    <polygon
+      points="-44,-108 44,-108 74,-76 74,76 44,108 -44,108 -74,76 -74,-76"
+      fill="url(#negFace)"
+      stroke="#f43f5e"
+      stroke-width="5"
+    />
+    <polygon
+      points="-38,-96 38,-96 63,-70 63,70 38,96 -38,96 -63,70 -63,-70"
+      fill="none"
+      stroke="#fda4af"
+      stroke-opacity="0.45"
+      stroke-width="1.8"
+    />
+    <polygon points="-44,-108 44,-108 56,-92 -56,-92" fill="#f43f5e" fill-opacity="0.32" />
+    <!-- Top-right corner - glyph -->
+    <line x1="29" y1="-62" x2="47" y2="-62" stroke="#fda4af" stroke-width="4.5" stroke-linecap="round" />
+    <polygon points="38,-40 46,-25 30,-25" fill="none" stroke="#fda4af" stroke-width="2.8" />
+  </g>
+
+  <!-- CENTER HERO CARD: Gold Sylop (0) -->
+  <g transform="translate(256, 248)" filter="url(#cardShadow)">
+    <!-- Hexagonal Sabacc Card Body -->
+    <polygon
+      points="-54,-132 54,-132 90,-94 90,94 54,132 -54,132 -90,94 -90,-94"
+      fill="url(#sylopFace)"
+      stroke="url(#goldFoil)"
+      stroke-width="6.5"
+    />
+    <!-- Metallic Cap Plates -->
+    <polygon points="-54,-132 54,-132 70,-113 -70,-113" fill="url(#goldFoil)" fill-opacity="0.36" />
+    <polygon points="-70,113 70,113 54,132 -54,132" fill="url(#goldFoil)" fill-opacity="0.36" />
+    <!-- Inner Precision Hairline -->
+    <polygon
+      points="-47,-118 47,-118 77,-86 77,86 47,118 -47,118 -77,86 -77,-86"
+      fill="none"
+      stroke="url(#goldFoil)"
+      stroke-opacity="0.55"
+      stroke-width="2"
+    />
+    <!-- Side FUI Calibration Ticks -->
+    <line x1="-90" y1="-12" x2="-78" y2="-12" stroke="#fbbf24" stroke-width="2.5" opacity="0.8" />
+    <line x1="-90" y1="0" x2="-73" y2="0" stroke="#fef08a" stroke-width="3.2" />
+    <line x1="-90" y1="12" x2="-78" y2="12" stroke="#fbbf24" stroke-width="2.5" opacity="0.8" />
+    <line x1="78" y1="-12" x2="90" y2="-12" stroke="#fbbf24" stroke-width="2.5" opacity="0.8" />
+    <line x1="73" y1="0" x2="90" y2="0" stroke="#fef08a" stroke-width="3.2" />
+    <line x1="78" y1="12" x2="90" y2="12" stroke="#fbbf24" stroke-width="2.5" opacity="0.8" />
+
+    <!-- Iconic Corellian Sylop Sun-Star Crest -->
+    <g transform="translate(0, -8)" filter="url(#goldGlow)">
+      <polygon
+        points="0,-68 15,-22 62,0 15,22 0,68 -15,22 -62,0 -15,-22"
+        fill="url(#goldFoil)"
+        fill-opacity="0.22"
+        stroke="url(#goldFoil)"
+        stroke-width="4"
+        stroke-linejoin="round"
+      />
+      <polygon
+        points="0,-46 10,-14 42,0 10,14 0,46 -10,14 -42,0 -10,-14"
+        fill="url(#goldFoil)"
+        fill-opacity="0.4"
+      />
+      <circle cx="0" cy="0" r="24" fill="#120c03" stroke="url(#goldFoil)" stroke-width="4" />
+      <circle cx="0" cy="0" r="9.5" fill="#fef08a" />
+    </g>
+
+    <!-- Crisp Zero Numeral -->
+    <rect x="-11" y="74" width="22" height="28" rx="9" fill="none" stroke="#fef08a" stroke-width="4.2" />
+  </g>
+
+  <!-- Bottom Spike Die Diamond Emblem -->
+  <g transform="translate(256, 424)" filter="url(#cardShadow)">
+    <polygon points="0,-20 20,0 0,20 -20,0" fill="#181208" stroke="url(#goldFoil)" stroke-width="3.5" />
+    <circle cx="0" cy="0" r="4.5" fill="#fef08a" />
+  </g>
 </svg>

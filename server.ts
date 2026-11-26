@@ -197,6 +197,17 @@ async function bootstrap() {
     return lastDetectedWebOrigin;
   }
 
+  function resolveDiscordAvatarUrl(siteUrl: string): string | undefined {
+    if (!siteUrl) return undefined;
+    try {
+      const parsed = new URL(siteUrl);
+      if (isPrivateHostname(parsed.hostname)) return undefined;
+      return `${siteUrl}/icon-maskable.png`;
+    } catch {
+      return undefined;
+    }
+  }
+
   const expressApp = express();
   if (process.env.TRUST_PROXY === 'true' || process.env.TRUST_PROXY === '1') {
     expressApp.set('trust proxy', 1);
@@ -407,6 +418,7 @@ async function bootstrap() {
           tableUrl ? `\n\n👉 **[Play at the Holotable](${tableUrl})**` : ''
         }`,
         url: tableUrl,
+        avatarUrl: resolveDiscordAvatarUrl(siteUrl),
         color: 0xf43f5e,
       }).catch(() => {});
     } else if (game.tour?.tourCompleted) {
@@ -418,6 +430,7 @@ async function bootstrap() {
             siteUrl ? `\n\n👉 **[Challenge the Cantina Tour](${siteUrl})**` : ''
           }`,
           url: siteUrl || undefined,
+          avatarUrl: resolveDiscordAvatarUrl(siteUrl),
           color: 0xfbbf24,
         }).catch(() => {});
       }
@@ -844,6 +857,7 @@ async function bootstrap() {
         ? `Test transmission from your Corellian Spike Sabacc server.\n\n👉 **[Open Sabacc Holotable](${siteUrl})**`
         : 'Test transmission from your Corellian Spike Sabacc server.',
       url: siteUrl || undefined,
+      avatarUrl: resolveDiscordAvatarUrl(siteUrl),
       color: 0x22d3ee,
     });
     if (!result.ok) {
@@ -876,6 +890,7 @@ async function bootstrap() {
         siteUrl ? `\n👉 **[Beat This Run on the Holotable](${siteUrl})**` : ''
       }`,
       url: siteUrl || undefined,
+      avatarUrl: resolveDiscordAvatarUrl(siteUrl),
       color: 0x38bdf8,
     });
     if (!result.ok) {
@@ -1100,6 +1115,7 @@ async function bootstrap() {
               : `\nRoom Code: \`${code}\``
           }`,
           url: joinLink,
+          avatarUrl: resolveDiscordAvatarUrl(siteUrl),
           color: 0xf59e0b,
         }).catch(() => {});
       }

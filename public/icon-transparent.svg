@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="posFace" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0c3144" />
+      <stop offset="55%" stop-color="#061925" />
+      <stop offset="100%" stop-color="#030a10" />
+    </linearGradient>
+    <linearGradient id="negFace" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#3f0c1b" />
+      <stop offset="55%" stop-color="#1e060e" />
+      <stop offset="100%" stop-color="#0b0205" />
+    </linearGradient>
+    <linearGradient id="sylopFace" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2d2009" />
+      <stop offset="50%" stop-color="#140e04" />
+      <stop offset="100%" stop-color="#070502" />
+    </linearGradient>
+    <linearGradient id="goldFoil" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fef08a" />
+      <stop offset="45%" stop-color="#fbbf24" />
+      <stop offset="100%" stop-color="#d97706" />
+    </linearGradient>
+    <filter id="cardShadow" x="-80%" y="-60%" width="260%" height="260%">
+      <feDropShadow dx="0" dy="12" stdDeviation="12" flood-color="#000000" flood-opacity="0.72" />
+    </filter>
+    <filter id="goldGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#fbbf24" flood-opacity="0.55" />
+    </filter>
+  </defs>
+
+  <!-- LEFT WING CARD: Positive (+) -->
+  <g transform="translate(158, 266) rotate(-18)" filter="url(#cardShadow)">
+    <polygon
+      points="-48,-118 48,-118 82,-83 82,83 48,118 -48,118 -82,83 -82,-83"
+      fill="url(#posFace)"
+      stroke="#22d3ee"
+      stroke-width="6"
+    />
+    <polygon
+      points="-41,-104 41,-104 69,-76 69,76 41,104 -41,104 -69,76 -69,-76"
+      fill="none"
+      stroke="#67e8f9"
+      stroke-opacity="0.45"
+      stroke-width="2"
+    />
+    <polygon points="-48,-118 48,-118 62,-100 -62,-100" fill="#22d3ee" fill-opacity="0.32" />
+    <g transform="translate(-42, -68)" stroke="#67e8f9" stroke-width="5" stroke-linecap="round">
+      <line x1="-10" y1="0" x2="10" y2="0" />
+      <line x1="0" y1="-10" x2="0" y2="10" />
+    </g>
+    <circle cx="-42" cy="-35" r="8" fill="none" stroke="#67e8f9" stroke-width="3.2" />
+  </g>
+
+  <!-- RIGHT WING CARD: Negative (-) -->
+  <g transform="translate(354, 266) rotate(18)" filter="url(#cardShadow)">
+    <polygon
+      points="-48,-118 48,-118 82,-83 82,83 48,118 -48,118 -82,83 -82,-83"
+      fill="url(#negFace)"
+      stroke="#f43f5e"
+      stroke-width="6"
+    />
+    <polygon
+      points="-41,-104 41,-104 69,-76 69,76 41,104 -41,104 -69,76 -69,-76"
+      fill="none"
+      stroke="#fda4af"
+      stroke-opacity="0.45"
+      stroke-width="2"
+    />
+    <polygon points="-48,-118 48,-118 62,-100 -62,-100" fill="#f43f5e" fill-opacity="0.32" />
+    <line x1="32" y1="-68" x2="52" y2="-68" stroke="#fda4af" stroke-width="5" stroke-linecap="round" />
+    <polygon points="42,-44 51,-28 33,-28" fill="none" stroke="#fda4af" stroke-width="3" />
+  </g>
+
+  <!-- CENTER HERO CARD: Gold Sylop (0) -->
+  <g transform="translate(256, 244)" filter="url(#cardShadow)">
+    <polygon
+      points="-62,-150 62,-150 103,-107 103,107 62,150 -62,150 -103,107 -103,-107"
+      fill="url(#sylopFace)"
+      stroke="url(#goldFoil)"
+      stroke-width="7.5"
+    />
+    <polygon points="-62,-150 62,-150 80,-128 -80,-128" fill="url(#goldFoil)" fill-opacity="0.36" />
+    <polygon points="-80,128 80,128 62,150 -62,150" fill="url(#goldFoil)" fill-opacity="0.36" />
+    <polygon
+      points="-54,-134 54,-134 88,-98 88,98 54,134 -54,134 -88,98 -88,-98"
+      fill="none"
+      stroke="url(#goldFoil)"
+      stroke-opacity="0.55"
+      stroke-width="2.2"
+    />
+    <g transform="translate(0, -10)" filter="url(#goldGlow)">
+      <polygon
+        points="0,-78 17,-25 72,0 17,25 0,78 -17,25 -72,0 -17,-25"
+        fill="url(#goldFoil)"
+        fill-opacity="0.22"
+        stroke="url(#goldFoil)"
+        stroke-width="4.5"
+        stroke-linejoin="round"
+      />
+      <polygon
+        points="0,-52 12,-16 48,0 12,16 0,52 -12,16 -48,0 -12,-16"
+        fill="url(#goldFoil)"
+        fill-opacity="0.42"
+      />
+      <circle cx="0" cy="0" r="27" fill="#120c03" stroke="url(#goldFoil)" stroke-width="4.5" />
+      <circle cx="0" cy="0" r="11" fill="#fef08a" />
+    </g>
+    <rect x="-13" y="84" width="26" height="32" rx="10" fill="none" stroke="#fef08a" stroke-width="4.8" />
+  </g>
+
+  <!-- Bottom Spike Die Diamond Emblem -->
+  <g transform="translate(256, 444)" filter="url(#cardShadow)">
+    <polygon points="0,-24 24,0 0,24 -24,0" fill="#181208" stroke="url(#goldFoil)" stroke-width="4" />
+    <circle cx="0" cy="0" r="5.5" fill="#fef08a" />
+  </g>
+</svg>
