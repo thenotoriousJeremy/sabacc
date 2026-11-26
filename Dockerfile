@@ -1,5 +1,5 @@
-# --- builder stage ---
-FROM node:22-alpine AS builder
+# --- builder stage (runs natively on host arch; JS/HTML outputs are arch-independent) ---
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
