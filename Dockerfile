@@ -1,34 +1,57 @@
 # --- builder stage ---
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 
-# Package files first so the install layer caches independently of source.
 COPY package.json package-lock.json* ./
 RUN npm ci
 
 COPY . .
 
-# The container serves a prebuilt static bundle and a bundled server, so the
-# Next runtime and the dev toolchain stay out of the final image.
 RUN STATIC_EXPORT=true npx next build \
  && node scripts/bundle-server.mjs dist/server.cjs
 
 # --- runtime stage ---
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 
-# esbuild inlined every dependency, so there is no node_modules to copy.
+ARG VERSION=0.2.0
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="Corellian Spike Sabacc" \
+      org.opencontainers.image.description="Self-hosted Star Wars Corellian Spike Sabacc holotable: solo gauntlets, daily seeded Kessel Run, multiplayer cantina, OIDC, and Discord webhooks." \
+      org.opencontainers.image.url="https://github.com/thenotoriousJeremy/sabacc" \
+      org.opencontainers.image.source="https://github.com/thenotoriousJeremy/sabacc" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.licenses="MIT"
+
+RUN apk add --no-cache tini su-exec tzdata \
+ && mkdir -p /data \
+ && chown -R 1000:1000 /data /app
+
 COPY --from=builder /app/dist/server.cjs ./server.cjs
 COPY --from=builder /app/out ./web
+COPY --from=builder /app/scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
 
-ENV NODE_ENV=production
-ENV STATIC_DIR=/app/web
-ENV PORT=3000
+# Normalize line endings in case cloned on Windows with core.autocrlf=true
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh \
+ && chmod +x /app/docker-entrypoint.sh
+
+ENV NODE_ENV=production \
+    STATIC_DIR=/app/web \
+    CONFIG_DIR=/data \
+    PORT=3000 \
+    TZ=Etc/UTC \
+    PUID=1000 \
+    PGID=1000
+
+VOLUME ["/data"]
 EXPOSE 3000
 
-USER node
-
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
+ENTRYPOINT ["/sbin/tini", "--", "/app/docker-entrypoint.sh"]
 CMD ["node", "server.cjs"]

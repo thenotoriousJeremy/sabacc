@@ -4,30 +4,60 @@ import { dirname, join } from 'path';
 import { networkInterfaces, type NetworkInterfaceInfo } from 'os';
 import { randomInt, randomUUID } from 'crypto';
 import { Server } from 'socket.io';
-import express from 'express';
-import { 
-  createDeck, 
-  shuffle, 
-  GameState, 
-  Player, 
-  Card, 
-  evaluateHand 
+import express, { type Request, type Response } from 'express';
+import {
+  beginOidcLogin,
+  clearSessionCookie,
+  completeOidcCallback,
+  issueSessionCookie,
+  readAuthSessionFromCookieHeader,
+  readOidcEnv,
+} from './lib/auth';
+import { postDiscordEmbed } from './lib/discord';
+import { getUtcDateKey } from './lib/daily-seed';
+import {
+  BotSkill,
+  GameMode,
+  GameState,
+  LobbySnapshot,
+  Player,
+  PublicRoomSummary,
+  STAKES_PRESETS,
+  StakesTier,
+  TieRule,
 } from './lib/game-logic';
+import { QUICK_EMOTES } from './lib/personas';
+import { Rng } from './lib/prng';
+import {
+  addBotToGame,
+  advanceCantinaTourStage,
+  applyBetAction,
+  applyCardAction,
+  canStartHand,
+  createRoomState,
+  dealNewHand,
+  executeSabaccShift,
+  finishDicePhase,
+  isPresent,
+  performBotTurn,
+  populateSoloBots,
+  sanitizeStateFor,
+  syncLedgerPlayer,
+  totalAnte,
+  trimLogs,
+} from './lib/room-engine';
+import { ServerConfigStore, verifyPassword } from './lib/server-config';
+import { PilotRegistryStore } from './lib/pilot-registry';
+import { filterCallsign, filterProfanity, PlayerReportEntry } from './lib/moderation';
 
 const dev = process.env.NODE_ENV !== 'production';
 
-// The packaged host binary ships a prebuilt static bundle and no Next runtime.
-// Docker and `npm run dev` keep using Next itself.
-// SABACC_PACKAGED is baked in at bundle time; the web assets sit beside the exe.
-const staticDir = process.env.STATIC_DIR
-  ?? (process.env.SABACC_PACKAGED === 'true' ? join(dirname(process.execPath), 'web') : undefined);
+const staticDir =
+  process.env.STATIC_DIR ??
+  (process.env.SABACC_PACKAGED === 'true' ? join(dirname(process.execPath), 'web') : undefined);
 
 const port = Number(process.env.PORT) || 3000;
 
-// --- Origin policy -------------------------------------------------------
-// If ALLOWED_ORIGINS is set, only those origins may connect. Otherwise we
-// allow loopback, private LAN ranges, and the origins used by the packaged
-// desktop/Android clients, which is the "host a game for friends" case.
 const configuredOrigins = (process.env.ALLOWED_ORIGINS ?? '')
   .split(',')
   .map(s => s.trim())
@@ -49,20 +79,29 @@ function isPrivateHostname(hostname: string): boolean {
   return false;
 }
 
-function isAllowedOrigin(origin?: string): boolean {
-  // Same-origin browser requests and native clients send no Origin header.
+function isAllowedOrigin(origin: string | undefined, publicUrl?: string, hostHeader?: string): boolean {
   if (!origin) return true;
   if (configuredOrigins.length > 0) return configuredOrigins.includes(origin);
   if (PACKAGED_CLIENT_ORIGINS.includes(origin)) return true;
   try {
-    return isPrivateHostname(new URL(origin).hostname);
+    const parsed = new URL(origin);
+    if (isPrivateHostname(parsed.hostname)) return true;
+    if (publicUrl) {
+      try {
+        if (new URL(publicUrl).origin === parsed.origin) return true;
+      } catch {
+        // Ignore malformed publicUrl.
+      }
+    }
+    if (hostHeader && parsed.host.toLowerCase() === hostHeader.toLowerCase()) {
+      return true;
+    }
+    return false;
   } catch {
     return false;
   }
 }
 
-// --- Room codes ----------------------------------------------------------
-// Ambiguous characters (I, O, 0, 1) are omitted so codes can be read aloud.
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ROOM_CODE_LENGTH = 5;
 
@@ -71,27 +110,30 @@ function normalizeRoomCode(raw: unknown): string | null {
   return /^[A-Z0-9]{4,6}$/.test(code) ? code : null;
 }
 
-// --- Input limits --------------------------------------------------------
 const MAX_NAME_LENGTH = 20;
 const MAX_CHAT_LENGTH = 300;
 const MAX_CREDITS = 1_000_000;
 const MAX_BUY_IN = 100_000;
 const MAX_PLAYERS_PER_ROOM = 6;
-// Long enough to survive a page refresh, a tunnel change, or a phone locking.
 const ROOM_GRACE_PERIOD_MS = 60_000;
-// A room nobody joins is reaped; the client creates then joins within a second.
 const EMPTY_ROOM_TTL_MS = 120_000;
 const MAX_ROOMS = 500;
 
-// Token bucket per socket. Sized so ordinary play never trips it, while a
-// scripted client cannot spam room creation, chat, or bot adds.
-const RATE_BURST = 40;
-const RATE_REFILL_PER_SEC = 12;
+const AI_TURN_DELAY_MS = 700;
+const DICE_TUMBLE_MS = 1350;
+const SHIFT_HOLD_MS = 1650;
+const NO_SHIFT_HOLD_MS = 850;
+const SHOWDOWN_AUTO_RETURN_MS = 16_000;
+
+const RATE_BURST = 50;
+const RATE_REFILL_PER_SEC = 15;
 
 function sanitizeName(raw: unknown, fallback: string): string {
-  // Strip control characters so names cannot break the log or chat rendering.
-  const name = String(raw ?? '').replace(/[\p{Cc}\p{Cf}]/gu, '').trim().slice(0, MAX_NAME_LENGTH);
-  return name || fallback;
+  const name = String(raw ?? '')
+    .replace(/[\p{Cc}\p{Cf}]/gu, '')
+    .trim()
+    .slice(0, MAX_NAME_LENGTH);
+  return filterCallsign(name, fallback);
 }
 
 function clampInt(raw: unknown, min: number, max: number): number | null {
@@ -100,24 +142,99 @@ function clampInt(raw: unknown, min: number, max: number): number | null {
   return Math.min(max, Math.max(min, value));
 }
 
+function validMode(raw: unknown): GameMode {
+  if (raw === 'quick_solo' || raw === 'cantina_tour' || raw === 'daily_kessel' || raw === 'party') {
+    return raw;
+  }
+  return 'party';
+}
+
+function validStakes(raw: unknown, fallback: StakesTier = 'medium'): StakesTier {
+  if (raw === 'low' || raw === 'medium' || raw === 'high' || raw === 'no_limit') return raw;
+  return fallback;
+}
+
+function isLoopbackReq(req: Request): boolean {
+  const ip = req.ip || req.socket.remoteAddress || '';
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
 async function bootstrap() {
+  const configStore = new ServerConfigStore();
+  const pilotRegistry = new PilotRegistryStore();
+  const oidcConfig = readOidcEnv();
+  const recentReports: PlayerReportEntry[] = [];
+  let lastDetectedWebOrigin = '';
+
+  function rememberOriginCandidate(originHeader?: string, protoHeader?: string, hostHeader?: string) {
+    if (originHeader && /^https?:\/\//i.test(originHeader) && !PACKAGED_CLIENT_ORIGINS.includes(originHeader)) {
+      lastDetectedWebOrigin = originHeader.replace(/\/+$/, '');
+      return;
+    }
+    if (hostHeader && !hostHeader.startsWith('127.0.0.1') && !hostHeader.startsWith('localhost')) {
+      const proto = (protoHeader || 'http').split(',')[0].trim();
+      const host = hostHeader.split(',')[0].trim();
+      if (host) lastDetectedWebOrigin = `${proto}://${host}`.replace(/\/+$/, '');
+    }
+  }
+
+  function resolveSiteUrl(req?: Request): string {
+    const configured = configStore.get().publicUrl;
+    if (configured) return configured.replace(/\/+$/, '');
+    if (req) {
+      const origin = req.headers.origin;
+      if (origin && /^https?:\/\//i.test(origin) && !PACKAGED_CLIENT_ORIGINS.includes(origin)) {
+        return origin.replace(/\/+$/, '');
+      }
+      const fwdProto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http')
+        .split(',')[0]
+        .trim();
+      const fwdHost = String(req.headers['x-forwarded-host'] || req.get('host') || '')
+        .split(',')[0]
+        .trim();
+      if (fwdHost) return `${fwdProto}://${fwdHost}`.replace(/\/+$/, '');
+    }
+    return lastDetectedWebOrigin;
+  }
+
   const expressApp = express();
+  if (process.env.TRUST_PROXY === 'true' || process.env.TRUST_PROXY === '1') {
+    expressApp.set('trust proxy', 1);
+  }
+
+  expressApp.disable('x-powered-by');
+  expressApp.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
+  expressApp.use(express.json({ limit: '32kb' }));
+
   const server = createServer(expressApp);
   const io = new Server(server, {
     cors: {
-      origin: (origin, callback) => callback(null, isAllowedOrigin(origin)),
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (configuredOrigins.length > 0) return callback(null, configuredOrigins.includes(origin));
+        // Exact origin & same-host enforcement runs in `allowRequest` below where `req.headers` is available.
+        callback(null, true);
+      },
       methods: ['GET', 'POST'],
-      credentials: false,
+      credentials: true,
+    },
+    allowRequest: (req, callback) => {
+      const origin = req.headers.origin;
+      const fwdHost = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+        .split(',')[0]
+        .trim();
+      callback(null, isAllowedOrigin(origin, configStore.get().publicUrl, fwdHost));
     },
   });
 
   const games: Record<string, GameState> = {};
+  const roomRngs = new Map<string, Rng>();
 
-  // --- Sessions ----------------------------------------------------------
-  // A seat belongs to a server-issued token, never to a name and never to a
-  // socket id. Tokens are held here rather than on Player because GameState is
-  // broadcast to the whole room, and a leaked token would let anyone take the
-  // seat it belongs to.
   interface Session {
     token: string;
     roomId: string;
@@ -126,32 +243,129 @@ async function bootstrap() {
 
   const sessionsByToken = new Map<string, Session>();
   const sessionsBySocket = new Map<string, Session>();
-  // Seats vacated in the lobby are held briefly so a refresh does not lose them.
   const pendingRemoval = new Map<string, NodeJS.Timeout>();
-  // Every timer that captures a room is tracked, so destroying the room cannot
-  // leave a callback firing into a deleted game.
-  const roomTimers = new Map<string, Set<NodeJS.Timeout>>();
+  const roomNamedTimers = new Map<string, Map<string, NodeJS.Timeout>>();
 
-  function laterInRoom(roomId: string, fn: () => void, ms: number) {
+  function isSiteLocked(): boolean {
+    return !!configStore.get().sitePasswordHash || !!oidcConfig?.requireAuth;
+  }
+
+  function isRequestAuthenticated(req: Request): boolean {
+    if (!isSiteLocked()) return true;
+    return !!readAuthSessionFromCookieHeader(req.headers.cookie);
+  }
+
+  function requireAdmin(req: Request, res: Response): boolean {
+    const sess = readAuthSessionFromCookieHeader(req.headers.cookie);
+    if (!sess?.isAdmin) {
+      res.status(403).json({ error: 'Administrator clearance required.' });
+      return false;
+    }
+    return true;
+  }
+
+  function buildLobbySnapshot(): LobbySnapshot {
+    const cfg = configStore.get();
+    const rooms: PublicRoomSummary[] = [];
+    let pilotsOnline = 0;
+
+    for (const g of Object.values(games)) {
+      const liveHumans = g.players.filter(p => !p.isAI && p.isConnected !== false);
+      pilotsOnline += liveHumans.length;
+
+      if (cfg.publicLobby && g.mode === 'party' && g.isPublic !== false && liveHumans.length > 0) {
+        const host = g.players.find(p => p.id === g.hostId) ?? liveHumans[0];
+        const seated = g.players.filter(p => !p.isSpectator);
+        const spectators = g.players.filter(p => p.isSpectator);
+        rooms.push({
+          roomId: g.roomId,
+          hostName: host?.name ?? 'Cantina Host',
+          stakesTier: g.settings.stakesTier,
+          ante: g.settings.ante,
+          sabaccAnte: g.settings.sabaccAnte,
+          seatedCount: seated.length,
+          maxPlayers: MAX_PLAYERS_PER_ROOM,
+          spectatorCount: spectators.length,
+          currentPhase: g.currentPhase,
+          currentRound: g.currentRound,
+        });
+      }
+    }
+
+    return {
+      rooms,
+      pilotsOnline,
+      serverNotice: cfg.serverNotice,
+      discordShareEnabled: !!(cfg.discordWebhookUrl && cfg.discordAllowPlayerShare),
+      leaderboard: pilotRegistry.getLeaderboard(12),
+      dailyLeaderboard: pilotRegistry.getDailyLeaderboard(getUtcDateKey(), 10),
+    };
+  }
+
+  function broadcastLobby() {
+    io.emit('lobbyUpdate', buildLobbySnapshot());
+  }
+
+  function rngFor(roomId: string): Rng {
+    return roomRngs.get(roomId) ?? Math.random;
+  }
+
+  function scheduleNamed(roomId: string, slot: string, fn: () => void, ms: number) {
+    cancelNamed(roomId, slot);
+    const timers = roomNamedTimers.get(roomId) ?? new Map<string, NodeJS.Timeout>();
     const handle = setTimeout(() => {
-      roomTimers.get(roomId)?.delete(handle);
+      timers.delete(slot);
       if (!games[roomId]) return;
       fn();
-    }, ms);
-    const timers = roomTimers.get(roomId) ?? new Set<NodeJS.Timeout>();
-    timers.add(handle);
-    roomTimers.set(roomId, timers);
-    return handle;
+    }, Math.max(0, ms));
+    timers.set(slot, handle);
+    roomNamedTimers.set(roomId, timers);
+  }
+
+  function cancelNamed(roomId: string, slot: string) {
+    const timers = roomNamedTimers.get(roomId);
+    const existing = timers?.get(slot);
+    if (existing) {
+      clearTimeout(existing);
+      timers!.delete(slot);
+    }
+  }
+
+  function clearGameFlowTimers(roomId: string) {
+    for (const slot of ['ai', 'dice', 'shift', 'showdown', 'turnClock']) {
+      cancelNamed(roomId, slot);
+    }
   }
 
   function destroyRoom(roomId: string) {
-    for (const handle of roomTimers.get(roomId) ?? []) clearTimeout(handle);
-    roomTimers.delete(roomId);
+    for (const handle of roomNamedTimers.get(roomId)?.values() ?? []) clearTimeout(handle);
+    roomNamedTimers.delete(roomId);
+    roomRngs.delete(roomId);
     for (const [token, session] of sessionsByToken) {
       if (session.roomId === roomId) sessionsByToken.delete(token);
     }
     delete games[roomId];
-    console.log(`Cleaned up room: ${roomId}`);
+    broadcastLobby();
+  }
+
+  function broadcastRoom(roomId: string) {
+    const game = games[roomId];
+    if (!game) return;
+    const roomSockets = io.sockets.adapter.rooms.get(roomId);
+    if (!roomSockets) return;
+    for (const sockId of roomSockets) {
+      const sock = io.sockets.sockets.get(sockId);
+      if (!sock) continue;
+      const viewerId = sessionsBySocket.get(sockId)?.playerId ?? null;
+      sock.emit('gameStateUpdate', sanitizeStateFor(game, viewerId));
+    }
+  }
+
+  function ensureHost(game: GameState) {
+    const currentHost = game.players.find(p => p.id === game.hostId && !p.isAI && isPresent(p));
+    if (currentHost) return;
+    const nextHost = game.players.find(p => !p.isAI && isPresent(p));
+    game.hostId = nextHost?.id ?? null;
   }
 
   function generateRoomCode(): string {
@@ -165,9 +379,6 @@ async function bootstrap() {
     throw new Error('Could not allocate a free room code');
   }
 
-  // Resolves who is acting from the socket's own session. The roomId in the
-  // client payload is never trusted for this - otherwise any socket could act
-  // in any room it managed to guess the code for.
   function resolveActor(socketId: string): { game: GameState; player: Player } | null {
     const session = sessionsBySocket.get(socketId);
     if (!session) return null;
@@ -177,21 +388,504 @@ async function bootstrap() {
     return player ? { game, player } : null;
   }
 
-  function currentTurnPlayer(game: GameState): Player | undefined {
-    return game.players[game.turnIndex];
+  function maybeNotifyJackpot(game: GameState) {
+    const cfg = configStore.get();
+    if (!cfg.discordWebhookUrl || !cfg.discordNotifyShowdownJackpot || !game.showdownResult) return;
+
+    const siteUrl = resolveSiteUrl();
+    const tableUrl =
+      siteUrl && game.mode === 'party' && game.isPublic !== false
+        ? `${siteUrl}/?room=${game.roomId}`
+        : siteUrl || undefined;
+
+    const sabaccWin = game.showdownResult.payouts.find(p => p.label === 'Sabacc Pot' && p.amount >= 25);
+    if (sabaccWin) {
+      const top = game.showdownResult.standings[0];
+      postDiscordEmbed(cfg.discordWebhookUrl, {
+        title: `🏆 Sabacc Pot Claimed — ${sabaccWin.amount} CR!`,
+        description: `**${sabaccWin.winnerNames.join(' & ')}** swept the Sabacc Pot in Room \`${game.roomId}\` with **${top?.evaluation.rankName ?? 'Specialty Sabacc'}**!${
+          tableUrl ? `\n\n👉 **[Play at the Holotable](${tableUrl})**` : ''
+        }`,
+        url: tableUrl,
+        color: 0xf43f5e,
+      }).catch(() => {});
+    } else if (game.tour?.tourCompleted) {
+      const hero = game.players.find(p => !p.isAI);
+      if (hero) {
+        postDiscordEmbed(cfg.discordWebhookUrl, {
+          title: '👑 Outer Rim Cantina Tour Conquered!',
+          description: `**${hero.name}** cleared Canto Bight with **${hero.credits} CR**!${
+            siteUrl ? `\n\n👉 **[Challenge the Cantina Tour](${siteUrl})**` : ''
+          }`,
+          url: siteUrl || undefined,
+          color: 0xfbbf24,
+        }).catch(() => {});
+      }
+    }
   }
 
-  // A disconnected player still holds their seat, so they must not be counted
-  // as someone the table is waiting on.
-  function isPresent(player: Player): boolean {
-    return player.isAI === true || player.isConnected !== false;
+  function armTurnAndPhaseTimers(game: GameState) {
+    const roomId = game.roomId;
+    cancelNamed(roomId, 'turnClock');
+    cancelNamed(roomId, 'ai');
+
+    if (game.currentPhase === 'CARD' || game.currentPhase === 'BETTING') {
+      const current = game.players[game.turnIndex];
+      if (!current || current.isFolded) return;
+
+      if (current.isAI) {
+        game.turnExpires = null;
+        const jitter = game.mode === 'daily_kessel' ? 0 : Math.floor(Math.random() * 240);
+        scheduleNamed(
+          roomId,
+          'ai',
+          () => {
+            const prevPhase = game.currentPhase;
+            const nextPhase = performBotTurn(game, rngFor(roomId));
+            onPhasePotentiallyChanged(game, prevPhase, nextPhase);
+            broadcastRoom(roomId);
+          },
+          AI_TURN_DELAY_MS + jitter
+        );
+      } else if (game.settings.turnSeconds > 0) {
+        game.turnExpires = Date.now() + game.settings.turnSeconds * 1000;
+        scheduleNamed(
+          roomId,
+          'turnClock',
+          () => {
+            const active = game.players[game.turnIndex];
+            if (!active || active.id !== current.id || active.isAI || active.isFolded) return;
+            game.logs.push(`⏱ ${active.name} ran out of time.`);
+            const prevPhase = game.currentPhase;
+            let nextPhase = prevPhase;
+            if (game.currentPhase === 'CARD') {
+              nextPhase = applyCardAction(game, active.id, 'stand', undefined, rngFor(roomId)).nextPhase;
+            } else if (game.currentPhase === 'BETTING') {
+              const canCheck = game.currentBet <= active.betThisRound;
+              nextPhase = applyBetAction(
+                game,
+                active.id,
+                canCheck ? 'check' : 'fold',
+                undefined,
+                rngFor(roomId)
+              ).nextPhase;
+            }
+            onPhasePotentiallyChanged(game, prevPhase, nextPhase);
+            broadcastRoom(roomId);
+          },
+          game.settings.turnSeconds * 1000
+        );
+      } else {
+        game.turnExpires = null;
+      }
+    }
   }
 
-  function canStart(game: GameState): boolean {
-    const present = game.players.filter(isPresent);
-    const contenders = present.filter(p => !p.isSpectator);
-    return contenders.length >= 2 && present.every(p => p.isReady);
+  function onPhasePotentiallyChanged(
+    game: GameState,
+    prevPhase: GameState['currentPhase'],
+    nextPhase: GameState['currentPhase']
+  ) {
+    const roomId = game.roomId;
+    if (nextPhase === 'DICE' && prevPhase !== 'DICE') {
+      game.turnExpires = null;
+      cancelNamed(roomId, 'turnClock');
+      cancelNamed(roomId, 'ai');
+
+      scheduleNamed(
+        roomId,
+        'dice',
+        () => {
+          if (game.currentPhase !== 'DICE') return;
+          if (game.shiftPending) {
+            executeSabaccShift(game, rngFor(roomId));
+            broadcastRoom(roomId);
+            scheduleNamed(
+              roomId,
+              'shift',
+              () => {
+                if (game.currentPhase !== 'DICE') return;
+                const after = finishDicePhase(game, rngFor(roomId));
+                onPhasePotentiallyChanged(game, 'DICE', after);
+                broadcastRoom(roomId);
+              },
+              SHIFT_HOLD_MS
+            );
+          } else {
+            scheduleNamed(
+              roomId,
+              'shift',
+              () => {
+                if (game.currentPhase !== 'DICE') return;
+                const after = finishDicePhase(game, rngFor(roomId));
+                onPhasePotentiallyChanged(game, 'DICE', after);
+                broadcastRoom(roomId);
+              },
+              NO_SHIFT_HOLD_MS
+            );
+          }
+        },
+        DICE_TUMBLE_MS
+      );
+      return;
+    }
+
+    if (nextPhase === 'SHOWDOWN') {
+      game.turnExpires = null;
+      clearGameFlowTimers(roomId);
+      if (game.showdownResult) {
+        for (const p of game.players) {
+          if (p.isAI || p.isSpectator || !p.pilotKey) continue;
+          const netDelta = game.showdownResult.netByPlayer?.[p.id] ?? 0;
+          const won = game.winnerIds.includes(p.id);
+          let potWon = 0;
+          let wonSabaccPot = false;
+          for (const pay of game.showdownResult.payouts) {
+            if (pay.winnerIds.includes(p.id)) {
+              potWon += Math.floor(pay.amount / Math.max(1, pay.winnerIds.length));
+              if (pay.label === 'Sabacc Pot') wonSabaccPot = true;
+            }
+          }
+          pilotRegistry.recordHand({
+            rawPilotKey: p.pilotKey,
+            callsign: p.name,
+            netDelta,
+            won,
+            wonSabaccPot,
+            potWon,
+            tourCompleted: !!game.tour?.tourCompleted,
+            dailyFinished: game.daily?.finished
+              ? {
+                  dateKey: game.daily.dateKey,
+                  finalCredits: p.credits,
+                  net: p.credits - game.daily.startingCredits,
+                }
+              : null,
+          });
+        }
+      }
+      maybeNotifyJackpot(game);
+      broadcastLobby();
+      if (game.mode === 'party') {
+        scheduleNamed(
+          roomId,
+          'showdown',
+          () => {
+            if (game.currentPhase === 'SHOWDOWN') {
+              game.currentPhase = 'JOINING';
+              broadcastRoom(roomId);
+              broadcastLobby();
+            }
+          },
+          SHOWDOWN_AUTO_RETURN_MS
+        );
+      }
+      return;
+    }
+
+    armTurnAndPhaseTimers(game);
   }
+
+  function launchHand(game: GameState) {
+    clearGameFlowTimers(game.roomId);
+    const phase = dealNewHand(game, rngFor(game.roomId));
+    onPhasePotentiallyChanged(game, 'JOINING', phase);
+    broadcastLobby();
+  }
+
+  // --- HTTP Auth, Lobby, Discord & Admin Endpoints ------------------------
+
+  const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+  function checkLoginThrottle(ip: string): boolean {
+    const now = Date.now();
+    const rec = loginAttempts.get(ip);
+    if (!rec || now > rec.resetAt) {
+      loginAttempts.set(ip, { count: 1, resetAt: now + 60_000 });
+      return true;
+    }
+    rec.count += 1;
+    return rec.count <= 10;
+  }
+
+  expressApp.get('/healthz', (_req, res) => {
+    res.json({
+      ok: true,
+      rooms: Object.keys(games).length,
+      uptime: Math.round(process.uptime()),
+    });
+  });
+
+  expressApp.get('/readyz', (_req, res) => {
+    res.json({ ready: true });
+  });
+
+  expressApp.get('/api/lan-info', (req, res) => {
+    if (!isRequestAuthenticated(req)) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    res.json({ port, addresses: localAddresses(), publicUrl: configStore.get().publicUrl });
+  });
+
+  expressApp.get('/api/lobby', (req, res) => {
+    if (!isRequestAuthenticated(req)) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    res.json(buildLobbySnapshot());
+  });
+
+  expressApp.get('/api/leaderboard', (req, res) => {
+    if (!isRequestAuthenticated(req)) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    res.json({
+      leaderboard: pilotRegistry.getLeaderboard(20),
+      dailyLeaderboard: pilotRegistry.getDailyLeaderboard(getUtcDateKey(), 15),
+      dateKey: getUtcDateKey(),
+    });
+  });
+
+  expressApp.post('/api/pilot/delete', (req, res) => {
+    const authSess = readAuthSessionFromCookieHeader(req.headers.cookie);
+    const bodyKey =
+      typeof req.body?.pilotKey === 'string' && /^[a-zA-Z0-9_-]{8,64}$/.test(req.body.pilotKey)
+        ? req.body.pilotKey
+        : '';
+    const resolvedKey = authSess?.sub ? `oidc:${authSess.sub}` : bodyKey;
+    const deleted = resolvedKey ? pilotRegistry.deletePilot(resolvedKey) : false;
+    res.json({ ok: true, deleted });
+  });
+
+  expressApp.get('/api/auth/status', (req, res) => {
+    const sess = readAuthSessionFromCookieHeader(req.headers.cookie);
+    const cfg = configStore.get();
+    res.json({
+      locked: isSiteLocked(),
+      authenticated: !isSiteLocked() || !!sess,
+      passwordEnabled: !!cfg.sitePasswordHash,
+      oidcEnabled: !!oidcConfig,
+      oidcProviderName: oidcConfig?.providerName ?? 'SSO',
+      adminConfigured: !!cfg.adminPasswordHash || !!oidcConfig,
+      canBootstrapAdmin: !cfg.adminPasswordHash && isLoopbackReq(req),
+      user: sess
+        ? { name: sess.name, isAdmin: sess.isAdmin, authMethod: sess.authMethod }
+        : null,
+    });
+  });
+
+  expressApp.post('/api/auth/login', (req, res) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkLoginThrottle(ip)) {
+      res.status(429).json({ error: 'Too many login attempts. Wait 60 seconds.' });
+      return;
+    }
+    const password = String(req.body?.password ?? '');
+    const callsign = sanitizeName(req.body?.callsign, 'Pilot');
+    const cfg = configStore.get();
+
+    if (cfg.adminPasswordHash && verifyPassword(password, cfg.adminPasswordHash)) {
+      issueSessionCookie(res, req, {
+        sub: 'admin',
+        name: callsign,
+        isAdmin: true,
+        authMethod: 'admin_password',
+      });
+      res.json({ ok: true, isAdmin: true });
+      return;
+    }
+
+    if (cfg.sitePasswordHash && verifyPassword(password, cfg.sitePasswordHash)) {
+      issueSessionCookie(res, req, {
+        sub: `pilot-${randomUUID()}`,
+        name: callsign,
+        isAdmin: false,
+        authMethod: 'password',
+      });
+      res.json({ ok: true, isAdmin: false });
+      return;
+    }
+
+    res.status(401).json({ error: 'Invalid access code.' });
+  });
+
+  expressApp.post('/api/auth/logout', (_req, res) => {
+    clearSessionCookie(res);
+    res.json({ ok: true });
+  });
+
+  expressApp.get('/api/auth/oidc/login', async (req, res) => {
+    if (!oidcConfig) {
+      res.status(404).send('OIDC is not configured on this server.');
+      return;
+    }
+    try {
+      await beginOidcLogin(req, res, oidcConfig, configStore.get().publicUrl);
+    } catch (err) {
+      res.status(502).send(err instanceof Error ? err.message : 'OIDC login failed.');
+    }
+  });
+
+  expressApp.get('/api/auth/oidc/callback', async (req, res) => {
+    if (!oidcConfig) {
+      res.status(404).send('OIDC is not configured on this server.');
+      return;
+    }
+    try {
+      await completeOidcCallback(req, res, oidcConfig);
+    } catch (err) {
+      res.status(502).send(err instanceof Error ? err.message : 'OIDC callback failed.');
+    }
+  });
+
+  expressApp.post('/api/admin/login', (req, res) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkLoginThrottle(ip)) {
+      res.status(429).json({ error: 'Too many attempts. Wait 60 seconds.' });
+      return;
+    }
+    const password = String(req.body?.password ?? '').trim();
+    const cfg = configStore.get();
+
+    // Localhost first-run bootstrap if ADMIN_PASSWORD was not set yet:
+    if (!cfg.adminPasswordHash && isLoopbackReq(req) && password.length >= 6) {
+      configStore.update({ newAdminPassword: password });
+      issueSessionCookie(res, req, {
+        sub: 'admin',
+        name: 'Administrator',
+        isAdmin: true,
+        authMethod: 'admin_password',
+      });
+      res.json({ ok: true, bootstrapped: true });
+      return;
+    }
+
+    if (!cfg.adminPasswordHash) {
+      res.status(403).json({
+        error: 'Set ADMIN_PASSWORD in your environment or .env to enable remote Admin access.',
+      });
+      return;
+    }
+
+    if (!verifyPassword(password, cfg.adminPasswordHash)) {
+      res.status(401).json({ error: 'Invalid admin password.' });
+      return;
+    }
+
+    const existing = readAuthSessionFromCookieHeader(req.headers.cookie);
+    issueSessionCookie(res, req, {
+      sub: existing?.sub ?? 'admin',
+      name: existing?.name ?? 'Administrator',
+      email: existing?.email,
+      isAdmin: true,
+      authMethod: 'admin_password',
+    });
+    res.json({ ok: true });
+  });
+
+  expressApp.get('/api/admin/overview', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const activeRooms = Object.values(games).map(g => ({
+      roomId: g.roomId,
+      mode: g.mode,
+      isPublic: g.isPublic !== false,
+      phase: g.currentPhase,
+      round: g.currentRound,
+      handPot: g.handPot,
+      sabaccPot: g.sabaccPot,
+      players: g.players.map(p => ({
+        id: p.id,
+        name: p.name,
+        isAI: !!p.isAI,
+        credits: p.credits,
+        connected: p.isConnected !== false,
+      })),
+    }));
+
+    res.json({
+      config: configStore.getRedactedForAdmin(),
+      rooms: activeRooms,
+      reports: recentReports.slice(-25).reverse(),
+      stats: {
+        uptimeSeconds: Math.round(process.uptime()),
+        memoryMb: Math.round(process.memoryUsage().rss / 1048576),
+        connectedSockets: io.engine.clientsCount,
+      },
+    });
+  });
+
+  expressApp.post('/api/admin/config', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    configStore.update(req.body ?? {});
+    broadcastLobby();
+    res.json({ ok: true, config: configStore.getRedactedForAdmin() });
+  });
+
+  expressApp.post('/api/admin/close-room', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const code = normalizeRoomCode(req.body?.roomId);
+    if (!code || !games[code]) {
+      res.status(404).json({ error: 'Room not found.' });
+      return;
+    }
+    io.to(code).emit('joinRejected', { reason: 'Table closed by server administrator.' });
+    destroyRoom(code);
+    res.json({ ok: true });
+  });
+
+  expressApp.post('/api/admin/discord-test', async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const cfg = configStore.get();
+    const siteUrl = resolveSiteUrl(req);
+    const result = await postDiscordEmbed(cfg.discordWebhookUrl, {
+      title: '🛸 Cantina Holotable Connected',
+      description: siteUrl
+        ? `Test transmission from your Corellian Spike Sabacc server.\n\n👉 **[Open Sabacc Holotable](${siteUrl})**`
+        : 'Test transmission from your Corellian Spike Sabacc server.',
+      url: siteUrl || undefined,
+      color: 0x22d3ee,
+    });
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  expressApp.post('/api/discord/share', async (req, res) => {
+    if (!isRequestAuthenticated(req)) {
+      res.status(401).json({ error: 'Authentication required.' });
+      return;
+    }
+    const cfg = configStore.get();
+    if (!cfg.discordWebhookUrl || !cfg.discordAllowPlayerShare) {
+      res.status(400).json({ error: 'Discord sharing is not enabled on this server.' });
+      return;
+    }
+    const shareText = String(req.body?.shareText ?? '').trim().slice(0, 800);
+    const pilot = sanitizeName(req.body?.pilot, 'Pilot');
+    if (!shareText) {
+      res.status(400).json({ error: 'Nothing to share.' });
+      return;
+    }
+    const siteUrl = resolveSiteUrl(req);
+    const result = await postDiscordEmbed(cfg.discordWebhookUrl, {
+      title: `🎲 ${pilot} posted a Sabacc Result`,
+      description: `\`\`\`\n${shareText}\n\`\`\`${
+        siteUrl ? `\n👉 **[Beat This Run on the Holotable](${siteUrl})**` : ''
+      }`,
+      url: siteUrl || undefined,
+      color: 0x38bdf8,
+    });
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  // --- Socket.IO Auth Gate & Rate Limiting --------------------------------
 
   const rateBuckets = new Map<string, { tokens: number; last: number }>();
 
@@ -206,13 +900,25 @@ async function bootstrap() {
     return allowed;
   }
 
-  io.on('connection', (socket) => {
-    console.log('User connected:', socket.id);
+  io.use((socket, next) => {
+    if (isSiteLocked()) {
+      const sess = readAuthSessionFromCookieHeader(socket.handshake.headers.cookie);
+      if (!sess) {
+        next(new Error('AUTH_REQUIRED'));
+        return;
+      }
+    }
+    next();
+  });
 
-    // One gate for every event, rather than a guard bolted onto each handler.
-    // socket.io does not forward middleware errors to the client, so the notice
-    // is sent explicitly - throttled, so telling them off cannot itself become
-    // the amplification.
+  io.on('connection', socket => {
+    rememberOriginCandidate(
+      socket.handshake.headers.origin,
+      String(socket.handshake.headers['x-forwarded-proto'] || ''),
+      String(socket.handshake.headers['x-forwarded-host'] || socket.handshake.headers.host || '')
+    );
+    socket.emit('lobbyUpdate', buildLobbySnapshot());
+
     let lastRateNotice = 0;
     socket.use((_event, next) => {
       if (!withinRateLimit(socket.id)) {
@@ -227,82 +933,97 @@ async function bootstrap() {
       next();
     });
 
-    socket.on('createRoom', () => {
-      // A room is created before anyone is in it, so nothing in the disconnect
-      // path can ever reap it. Without a cap and a reaper, createRoom is an
-      // unbounded allocation any client can drive.
-      if (Object.keys(games).length >= MAX_ROOMS) {
-        socket.emit('joinRejected', { reason: 'The server is at capacity. Try again shortly.' });
-        return;
+    socket.on(
+      'createRoom',
+      (payload?: { mode?: unknown; stakesTier?: unknown; dailyDateKey?: unknown; isPublic?: unknown }) => {
+        if (Object.keys(games).length >= MAX_ROOMS) {
+          socket.emit('joinRejected', { reason: 'The server is at capacity. Try again shortly.' });
+          return;
+        }
+
+        const cfg = configStore.get();
+        const roomId = generateRoomCode();
+        const mode = validMode(payload?.mode);
+        const stakesTier = validStakes(payload?.stakesTier, cfg.defaultStakes);
+        const { game, rng } = createRoomState({
+          roomId,
+          mode,
+          stakesTier,
+          dailyDateKey: typeof payload?.dailyDateKey === 'string' ? payload.dailyDateKey : undefined,
+        });
+
+        game.isPublic = mode === 'party' ? payload?.isPublic !== false : false;
+        if (cfg.lockCreditsGlobal && mode === 'party') {
+          game.settings.lockedCredits = true;
+        }
+
+        games[roomId] = game;
+        roomRngs.set(roomId, rng);
+
+        scheduleNamed(
+          roomId,
+          'emptyTtl',
+          () => {
+            if (games[roomId] && games[roomId].players.length === 0) destroyRoom(roomId);
+          },
+          EMPTY_ROOM_TTL_MS
+        );
+
+        socket.emit('roomCreated', { roomId, mode });
       }
+    );
 
-      const roomId = generateRoomCode();
-      games[roomId] = {
-        roomId,
-        players: [],
-        deck: shuffle(createDeck()),
-        discardPile: [],
-        handPot: 0,
-        sabaccPot: 0,
-        currentRound: 1,
-        gamesPlayed: 0,
-        currentPhase: 'JOINING',
-        turnIndex: 0,
-        dealerIndex: 0,
-        currentBet: 0,
-        lastDiceRoll: null,
-        winnerId: null,
-        logs: [`Room ${roomId} created.`],
-        messages: []
-      };
-      // Reaped if nobody ever joins, e.g. the tab closed between create and join.
-      laterInRoom(roomId, () => {
-        if (games[roomId] && games[roomId].players.length === 0) destroyRoom(roomId);
-      }, EMPTY_ROOM_TTL_MS);
-      socket.emit('roomCreated', { roomId });
-    });
-
-    socket.on('joinRoom', ({ roomId, playerName, isSpectator, token }) => {
+    socket.on('joinRoom', ({ roomId, playerName, isSpectator, token, pilotKey, vaultCredits }) => {
       const code = normalizeRoomCode(roomId);
       if (!code) {
-        // joinRejected is distinct from a generic error so the client knows to
-        // fall back to the join screen instead of waiting forever.
         socket.emit('joinRejected', { reason: 'Room codes are 4-6 letters or numbers.' });
         return;
       }
 
-      // Rooms are only created through createRoom, so a typo no longer strands
-      // you alone in a brand new room that looks like the one you wanted.
       const game = games[code];
       if (!game) {
         socket.emit('joinRejected', { reason: `Room ${code} no longer exists.` });
         return;
       }
 
-      // Reconnect only if the token was issued by us, for this room.
       const existingSession = typeof token === 'string' ? sessionsByToken.get(token) : undefined;
-      const rejoining = existingSession && existingSession.roomId === code
-        ? game.players.find(p => p.id === existingSession.playerId)
-        : undefined;
+      const rejoining =
+        existingSession && existingSession.roomId === code
+          ? game.players.find(p => p.id === existingSession.playerId)
+          : undefined;
 
       socket.join(code);
+      cancelNamed(code, 'emptyTtl');
+      cancelNamed(code, 'roomReap');
 
       if (existingSession && rejoining) {
         sessionsBySocket.set(socket.id, existingSession);
-        // They came back inside the grace period, so cancel the seat release.
         const scheduled = pendingRemoval.get(existingSession.playerId);
         if (scheduled) {
           clearTimeout(scheduled);
           pendingRemoval.delete(existingSession.playerId);
         }
         rejoining.isConnected = true;
-        if (isSpectator !== undefined) {
+        if (isSpectator !== undefined && game.mode === 'party') {
           rejoining.isSpectator = !!isSpectator;
-          rejoining.isFolded = !!isSpectator || (game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN');
+          rejoining.isFolded =
+            !!isSpectator || (game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN');
         }
+        ensureHost(game);
         game.logs.push(`${rejoining.name} reconnected.`);
-        socket.emit('session', { token: existingSession.token, playerId: existingSession.playerId, roomId: code });
-        io.to(code).emit('gameStateUpdate', game);
+        trimLogs(game);
+        socket.emit('session', {
+          token: existingSession.token,
+          playerId: existingSession.playerId,
+          roomId: code,
+        });
+        broadcastRoom(code);
+        broadcastLobby();
+        return;
+      }
+
+      if (game.mode !== 'party' && game.players.some(p => !p.isAI)) {
+        socket.emit('joinRejected', { reason: 'This table is a solo run.' });
         return;
       }
 
@@ -311,160 +1032,169 @@ async function bootstrap() {
         return;
       }
 
+      const wasEmptyOfHumans = !game.players.some(p => !p.isAI);
+      const forcePlayer = game.mode !== 'party';
+      const spectating = forcePlayer ? false : !!isSpectator;
       const isMidGame = game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN';
+      const minVaultStack = totalAnte(game.settings) * 4;
+      const clampedVault =
+        game.mode === 'quick_solo' && !configStore.get().lockCreditsGlobal
+          ? clampInt(vaultCredits, minVaultStack, 250_000)
+          : null;
+      const initialCredits = clampedVault ?? game.settings.startingCredits;
+
+      const authSess = readAuthSessionFromCookieHeader(socket.handshake.headers.cookie);
+      const resolvedName = sanitizeName(
+        playerName || authSess?.name,
+        `Pilot ${game.players.length + 1}`
+      );
+      const resolvedPilotKey = authSess?.sub
+        ? `oidc:${authSess.sub}`
+        : typeof pilotKey === 'string' && /^[a-zA-Z0-9_-]{8,64}$/.test(pilotKey)
+          ? pilotKey
+          : undefined;
+
       const player: Player = {
         id: randomUUID(),
-        name: sanitizeName(playerName, `Player ${game.players.length + 1}`),
+        name: resolvedName,
         hand: [],
-        credits: 1000,
-        isFolded: !!isSpectator || isMidGame,
-        isReady: !!isSpectator,
+        credits: initialCredits,
+        buyInTotal: initialCredits,
+        contributed: 0,
+        isFolded: spectating || isMidGame,
+        isReady: spectating || forcePlayer,
         betThisRound: 0,
-        isSpectator: !!isSpectator,
-        isConnected: true
+        isSpectator: spectating,
+        isConnected: true,
+        lastAction: null,
+        pilotKey: resolvedPilotKey,
       };
       game.players.push(player);
+      ensureHost(game);
+      syncLedgerPlayer(game, player);
 
       const session: Session = { token: randomUUID(), roomId: code, playerId: player.id };
       sessionsByToken.set(session.token, session);
       sessionsBySocket.set(socket.id, session);
 
-      game.logs.push(`${player.name} joined the room${isSpectator ? ' as a spectator' : (isMidGame ? ' (waiting for next game)' : '')}.`);
+      game.logs.push(
+        `${player.name} joined${spectating ? ' as spectator' : isMidGame ? ' (next hand)' : ''}.`
+      );
+
+      // Notify Discord when a new multiplayer table opens!
+      const cfg = configStore.get();
+      if (
+        wasEmptyOfHumans &&
+        game.mode === 'party' &&
+        game.isPublic !== false &&
+        cfg.discordWebhookUrl &&
+        cfg.discordNotifyRoomCreate
+      ) {
+        const siteUrl = resolveSiteUrl();
+        const joinLink = siteUrl ? `${siteUrl}/?room=${code}` : undefined;
+        postDiscordEmbed(cfg.discordWebhookUrl, {
+          title: `🛸 Sabacc Table Open — Room ${code}`,
+          description: `**${player.name}** opened a **${game.settings.stakesTier.toUpperCase()}** table (${game.settings.ante}/${game.settings.sabaccAnte} CR ante).${
+            joinLink
+              ? `\n\n👉 **[Join Table ${code} Now](${joinLink})**`
+              : `\nRoom Code: \`${code}\``
+          }`,
+          url: joinLink,
+          color: 0xf59e0b,
+        }).catch(() => {});
+      }
+
+      if (forcePlayer) {
+        populateSoloBots(game, rngFor(code));
+      }
+
       socket.emit('session', { token: session.token, playerId: player.id, roomId: code });
-      io.to(code).emit('gameStateUpdate', game);
+
+      if (forcePlayer && canStartHand(game)) {
+        launchHand(game);
+      }
+
+      trimLogs(game);
+      broadcastRoom(code);
+      broadcastLobby();
     });
+
+    socket.on(
+      'updateTableSettings',
+      (patch: {
+        stakesTier?: unknown;
+        tieRule?: unknown;
+        turnSeconds?: unknown;
+        lockedCredits?: unknown;
+        isPublic?: unknown;
+      }) => {
+        const actor = resolveActor(socket.id);
+        if (!actor) return;
+        const { game, player } = actor;
+        if (game.hostId !== player.id) {
+          socket.emit('error', 'Only the table host can change table rules.');
+          return;
+        }
+        if (game.mode === 'cantina_tour' || game.mode === 'daily_kessel') {
+          socket.emit('error', 'Stakes are fixed in this challenge mode.');
+          return;
+        }
+        if (game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN') {
+          socket.emit('error', 'Finish the current hand before changing stakes.');
+          return;
+        }
+
+        if (patch?.stakesTier) {
+          const tier = validStakes(patch.stakesTier);
+          const preset = STAKES_PRESETS[tier];
+          game.settings.stakesTier = tier;
+          game.settings.ante = preset.ante;
+          game.settings.sabaccAnte = preset.sabaccAnte;
+          game.settings.tableLimit = preset.tableLimit;
+          game.settings.startingCredits = preset.startingCredits;
+        }
+        if (patch?.tieRule === 'split' || patch?.tieRule === 'blind_draw') {
+          game.settings.tieRule = patch.tieRule as TieRule;
+        }
+        if (patch?.turnSeconds !== undefined) {
+          const sec = clampInt(patch.turnSeconds, 0, 120);
+          if (sec !== null) game.settings.turnSeconds = sec;
+        }
+        if (typeof patch?.lockedCredits === 'boolean' && !configStore.get().lockCreditsGlobal) {
+          game.settings.lockedCredits = patch.lockedCredits;
+        }
+        if (typeof patch?.isPublic === 'boolean' && game.mode === 'party') {
+          game.isPublic = patch.isPublic;
+        }
+
+        trimLogs(game);
+        broadcastRoom(game.roomId);
+        broadcastLobby();
+      }
+    );
 
     socket.on('updateCredits', ({ credits }) => {
       const actor = resolveActor(socket.id);
       if (!actor) return;
       const { game, player } = actor;
 
+      if (game.settings.lockedCredits || configStore.get().lockCreditsGlobal) {
+        socket.emit('error', 'Bankrolls are locked at this table.');
+        return;
+      }
       const amount = clampInt(credits, 0, MAX_CREDITS);
       if (amount === null) {
         socket.emit('error', 'Credits must be a number.');
         return;
       }
       if (game.currentPhase === 'JOINING' || game.currentPhase === 'SHOWDOWN') {
+        const delta = amount - player.credits;
         player.credits = amount;
-        game.logs.push(`${player.name} updated their credits to ${amount}.`);
-        io.to(game.roomId).emit('gameStateUpdate', game);
-      }
-    });
-
-    socket.on('toggleSpectator', () => {
-      const actor = resolveActor(socket.id);
-      if (!actor) return;
-      const { game, player } = actor;
-      const roomId = game.roomId;
-      {
-        const isMidGame = game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN';
-        
-        // If trying to become a player mid-game, ignore
-        if (!player.isSpectator && isMidGame) {
-          // Already a player, can always switch to spectator (folds them)
-          player.isSpectator = true;
-          player.isFolded = true;
-          player.hand = [];
-          game.logs.push(`${player.name} switched to spectating.`);
-        } else if (player.isSpectator) {
-          // Spectator trying to join
-          if (isMidGame) {
-            // Can't join mid-game as active player
-            player.isSpectator = false;
-            player.isFolded = true;
-            game.logs.push(`${player.name} will join the next game.`);
-          } else {
-            player.isSpectator = false;
-            player.isReady = false;
-            player.isFolded = false;
-            game.logs.push(`${player.name} is now playing.`);
-          }
-        } else {
-          // Player switching to spectator in lobby
-          player.isSpectator = true;
-          player.isReady = true;
-          player.isFolded = true;
-          game.logs.push(`${player.name} is now spectating.`);
-        }
-
-        io.to(roomId).emit('gameStateUpdate', game);
-      }
-    });
-
-    socket.on('ready', () => {
-      const actor = resolveActor(socket.id);
-      if (!actor) return;
-      const { game, player } = actor;
-      const roomId = game.roomId;
-      {
-        // Enforce ante check (15 CR)
-        if (!player.isSpectator && player.credits < 15) {
-          game.logs.push(`${player.name} needs at least 15 CR to play.`);
-          io.to(roomId).emit('gameStateUpdate', game);
-          return;
-        }
-        player.isReady = true;
-        game.logs.push(`${player.name} is ready.`);
-      }
-
-      if (canStart(game)) {
-        startGame(game);
-      }
-
-      io.to(roomId).emit('gameStateUpdate', game);
-    });
-
-    socket.on('addAI', () => {
-      // Membership is required: previously any socket could stuff bots into any
-      // room whose code it could guess.
-      const actor = resolveActor(socket.id);
-      if (!actor) return;
-      const { game } = actor;
-      const roomId = game.roomId;
-      if (game.currentPhase !== 'JOINING') return;
-      if (game.players.length >= MAX_PLAYERS_PER_ROOM) return;
-
-      const aiId = `ai-${randomUUID()}`;
-      const aiNames = ["C-3PO", "R2-D2", "L3-37", "IG-88", "HK-47", "K-2SO", "Chopper"];
-      // Two bots with the same name are indistinguishable at the table.
-      const taken = new Set(game.players.map(p => p.name));
-      const free = aiNames.map(n => `${n} (Bot)`).filter(n => !taken.has(n));
-      const pool = free.length > 0 ? free : aiNames.map(n => `${n} (Bot)`);
-      const name = pool[randomInt(pool.length)];
-
-      game.players.push({
-        id: aiId,
-        name,
-        hand: [],
-        credits: 1000,
-        isFolded: false,
-        isReady: true,
-        betThisRound: 0,
-        isAI: true
-      });
-
-      game.logs.push(`${name} joined the room.`);
-      io.to(roomId).emit('gameStateUpdate', game);
-
-      // Check if game can start
-      if (canStart(game)) {
-        startGame(game);
-        io.to(roomId).emit('gameStateUpdate', game);
-      }
-    });
-
-    socket.on('removeAI', ({ aiId }) => {
-      const actor = resolveActor(socket.id);
-      if (!actor) return;
-      const { game } = actor;
-      const roomId = game.roomId;
-      if (game.currentPhase !== 'JOINING') return;
-
-      const index = game.players.findIndex(p => p.id === aiId && p.isAI);
-      if (index !== -1) {
-        const [removed] = game.players.splice(index, 1);
-        game.logs.push(`${removed.name} left the room.`);
-        io.to(roomId).emit('gameStateUpdate', game);
+        player.buyInTotal += delta;
+        syncLedgerPlayer(game, player);
+        game.logs.push(`${player.name} adjusted stack to ${amount} CR.`);
+        trimLogs(game);
+        broadcastRoom(game.roomId);
       }
     });
 
@@ -473,157 +1203,307 @@ async function bootstrap() {
       if (!actor) return;
       const { game, player } = actor;
 
+      if (game.settings.lockedCredits || configStore.get().lockCreditsGlobal) {
+        socket.emit('error', 'Re-buys are locked at this table.');
+        return;
+      }
       const buyIn = clampInt(amount, 1, MAX_BUY_IN);
       if (buyIn === null) {
         socket.emit('error', 'Buy-in must be a number.');
         return;
       }
-      if (game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN' && !player.isSpectator && !player.isFolded) {
-        socket.emit('error', "You cannot add credits while playing a hand.");
+      if (
+        game.currentPhase !== 'JOINING' &&
+        game.currentPhase !== 'SHOWDOWN' &&
+        !player.isSpectator &&
+        !player.isFolded
+      ) {
+        socket.emit('error', 'Cannot add credits mid-hand.');
         return;
       }
-      player.credits = Math.min(MAX_CREDITS, player.credits + buyIn);
-      game.logs.push(`${player.name} added ${buyIn} credits.`);
-      io.to(game.roomId).emit('gameStateUpdate', game);
+      const next = Math.min(MAX_CREDITS, player.credits + buyIn);
+      const actualAdded = next - player.credits;
+      player.credits = next;
+      player.buyInTotal += actualAdded;
+      syncLedgerPlayer(game, player);
+      game.logs.push(`${player.name} bought in for +${actualAdded} CR.`);
+      trimLogs(game);
+      broadcastRoom(game.roomId);
+    });
+
+    socket.on('toggleSpectator', () => {
+      const actor = resolveActor(socket.id);
+      if (!actor) return;
+      const { game, player } = actor;
+      if (game.mode !== 'party') return;
+
+      const isMidGame = game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN';
+      if (!player.isSpectator && isMidGame) {
+        player.isSpectator = true;
+        player.isFolded = true;
+        player.hand = [];
+        game.logs.push(`${player.name} stepped back to spectate.`);
+        if (game.players[game.turnIndex]?.id === player.id) {
+          const nextPhase = applyBetAction(game, player.id, 'fold').nextPhase;
+          onPhasePotentiallyChanged(game, game.currentPhase, nextPhase);
+        }
+      } else if (player.isSpectator) {
+        player.isSpectator = false;
+        player.isFolded = isMidGame;
+        player.isReady = false;
+        syncLedgerPlayer(game, player);
+        game.logs.push(`${player.name} took a seat${isMidGame ? ' for next hand' : ''}.`);
+      } else {
+        player.isSpectator = true;
+        player.isReady = true;
+        player.isFolded = true;
+        game.logs.push(`${player.name} is spectating.`);
+      }
+      trimLogs(game);
+      broadcastRoom(game.roomId);
+      broadcastLobby();
+    });
+
+    socket.on('ready', () => {
+      const actor = resolveActor(socket.id);
+      if (!actor) return;
+      const { game, player } = actor;
+
+      if (game.daily?.finished || game.tour?.runFailed || game.tour?.tourCompleted) {
+        return;
+      }
+      const req = totalAnte(game.settings);
+      if (!player.isSpectator && player.credits < req) {
+        socket.emit('error', `Need at least ${req} CR to cover the ante.`);
+        return;
+      }
+      player.isReady = true;
+      if (canStartHand(game)) {
+        launchHand(game);
+      }
+      broadcastRoom(game.roomId);
+    });
+
+    socket.on('startHandNow', () => {
+      const actor = resolveActor(socket.id);
+      if (!actor) return;
+      const { game, player } = actor;
+      if (game.hostId !== player.id) return;
+      if (game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN') return;
+
+      const eligible = game.players.filter(
+        p => !p.isSpectator && isPresent(p) && p.credits >= totalAnte(game.settings)
+      );
+      if (eligible.length < 2) {
+        socket.emit('error', 'Need at least 2 funded seats to deal.');
+        return;
+      }
+      player.isReady = true;
+      launchHand(game);
+      broadcastRoom(game.roomId);
+    });
+
+    socket.on('advanceTourStage', () => {
+      const actor = resolveActor(socket.id);
+      if (!actor) return;
+      const { game } = actor;
+      if (advanceCantinaTourStage(game, rngFor(game.roomId))) {
+        launchHand(game);
+        broadcastRoom(game.roomId);
+      }
+    });
+
+    socket.on('addAI', (payload?: { skill?: unknown; personaId?: unknown }) => {
+      const actor = resolveActor(socket.id);
+      if (!actor) return;
+      const { game } = actor;
+      if (game.mode === 'cantina_tour' || game.mode === 'daily_kessel') return;
+      if (game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN') return;
+      if (game.players.length >= MAX_PLAYERS_PER_ROOM) return;
+
+      const skill: BotSkill | undefined =
+        payload?.skill === 'novice' || payload?.skill === 'regular' || payload?.skill === 'shark'
+          ? payload.skill
+          : undefined;
+      const personaId = typeof payload?.personaId === 'string' ? payload.personaId : undefined;
+
+      addBotToGame(game, { skill, personaId }, rngFor(game.roomId));
+      if (game.currentPhase === 'JOINING' && canStartHand(game)) {
+        launchHand(game);
+      }
+      broadcastRoom(game.roomId);
+      broadcastLobby();
+    });
+
+    socket.on('removeAI', ({ aiId }) => {
+      const actor = resolveActor(socket.id);
+      if (!actor) return;
+      const { game } = actor;
+      if (game.mode === 'cantina_tour' || game.mode === 'daily_kessel') return;
+      if (game.currentPhase !== 'JOINING' && game.currentPhase !== 'SHOWDOWN') return;
+
+      const index = game.players.findIndex(p => p.id === aiId && p.isAI);
+      if (index !== -1) {
+        const [removed] = game.players.splice(index, 1);
+        if (game.dealerIndex >= game.players.length) game.dealerIndex = game.players.length - 1;
+        game.logs.push(`${removed.name} left the table.`);
+        trimLogs(game);
+        broadcastRoom(game.roomId);
+        broadcastLobby();
+      }
     });
 
     socket.on('cardAction', ({ action, cardId }) => {
       const actor = resolveActor(socket.id);
       if (!actor) return;
       const { game, player } = actor;
-      const roomId = game.roomId;
-      if (game.currentPhase !== 'CARD') return;
-
-      const currentPlayer = currentTurnPlayer(game);
-      if (!currentPlayer || currentPlayer.id !== player.id) return;
-
-      if (action === 'draw') {
-        const card = game.deck.pop();
-        if (card) currentPlayer.hand.push(card);
-        game.logs.push(`${currentPlayer.name} drew a card from the deck.`);
-      } else if (action === 'swap_deck') {
-        // Discard a card first, then draw from deck
-        const cardIndex = currentPlayer.hand.findIndex(c => c.id === cardId);
-        if (cardIndex !== -1) {
-          const [discarded] = currentPlayer.hand.splice(cardIndex, 1);
-          game.discardPile.push(discarded);
-          const newCard = game.deck.pop();
-          if (newCard) currentPlayer.hand.push(newCard);
-          game.logs.push(`${currentPlayer.name} swapped a card with the deck.`);
-        }
-      } else if (action === 'swap_discard') {
-        // Discard a card first, then take top of discard pile
-        const cardIndex = currentPlayer.hand.findIndex(c => c.id === cardId);
-        if (cardIndex !== -1 && game.discardPile.length > 0) {
-          const [discarded] = currentPlayer.hand.splice(cardIndex, 1);
-          const newCard = game.discardPile.pop()!;
-          game.discardPile.push(discarded);
-          currentPlayer.hand.push(newCard);
-          game.logs.push(`${currentPlayer.name} swapped a card with the discard pile.`);
-        }
-      } else {
-        game.logs.push(`${currentPlayer.name} stood.`);
+      if (action !== 'draw' && action !== 'swap_deck' && action !== 'swap_discard' && action !== 'stand') {
+        return;
       }
-
-      advanceTurn(game);
-      io.to(roomId).emit('gameStateUpdate', game);
+      const prevPhase = game.currentPhase;
+      const res = applyCardAction(game, player.id, action, cardId, rngFor(game.roomId));
+      if (!res.ok) {
+        if (res.error) socket.emit('error', res.error);
+        return;
+      }
+      onPhasePotentiallyChanged(game, prevPhase, res.nextPhase);
+      broadcastRoom(game.roomId);
     });
 
     socket.on('betAction', ({ action, amount }) => {
       const actor = resolveActor(socket.id);
       if (!actor) return;
       const { game, player } = actor;
-      const roomId = game.roomId;
-      if (game.currentPhase !== 'BETTING') return;
-
-      const currentPlayer = currentTurnPlayer(game);
-      if (!currentPlayer || currentPlayer.id !== player.id) return;
-
-      // A negative raise would previously have refunded the raiser from the pot.
-      const betAmount = clampInt(amount, 0, MAX_CREDITS) ?? 0;
-
-      if (action === 'fold') {
-        currentPlayer.isFolded = true;
-        game.logs.push(`${currentPlayer.name} folded.`);
-      } else if (action === 'check') {
-        if (game.currentBet > currentPlayer.betThisRound) {
-          game.logs.push(`${currentPlayer.name} cannot check, must call or fold.`);
-          return;
-        }
-        game.logs.push(`${currentPlayer.name} checked.`);
-      } else if (action === 'call') {
-        const callAmount = Math.min(game.currentBet - currentPlayer.betThisRound, currentPlayer.credits);
-        if (callAmount > 0) {
-          currentPlayer.credits -= callAmount;
-          currentPlayer.betThisRound += callAmount;
-          game.handPot += callAmount;
-          if (currentPlayer.credits === 0) {
-            game.logs.push(`${currentPlayer.name} called ALL IN.`);
-          } else {
-            game.logs.push(`${currentPlayer.name} called.`);
-          }
-        } else {
-          game.logs.push(`${currentPlayer.name} checked.`);
-        }
-      } else if (action === 'raise' || action === 'bet' || action === 'all_in') {
-        let totalToPay = 0;
-        let raiseTo = 0;
-
-        if (action === 'all_in') {
-          totalToPay = currentPlayer.credits;
-          raiseTo = currentPlayer.betThisRound + totalToPay;
-        } else {
-          raiseTo = game.currentBet + betAmount;
-          totalToPay = raiseTo - currentPlayer.betThisRound;
-        }
-        
-        if (totalToPay > currentPlayer.credits) {
-          game.logs.push(`${currentPlayer.name} doesn't have enough credits.`);
-          return;
-        }
-
-        currentPlayer.credits -= totalToPay;
-        currentPlayer.betThisRound += totalToPay;
-        game.handPot += totalToPay;
-        
-        if (raiseTo > game.currentBet) {
-          game.currentBet = raiseTo;
-        }
-        
-        if (action === 'all_in' || currentPlayer.credits === 0) {
-          game.logs.push(`${currentPlayer.name} went ALL IN with ${totalToPay}.`);
-        } else {
-          game.logs.push(`${currentPlayer.name} ${action === 'bet' ? 'bet' : 'raised to'} ${raiseTo}.`);
-        }
+      if (
+        action !== 'fold' &&
+        action !== 'check' &&
+        action !== 'call' &&
+        action !== 'bet' &&
+        action !== 'raise' &&
+        action !== 'all_in'
+      ) {
+        return;
       }
+      const prevPhase = game.currentPhase;
+      const numAmount = amount !== undefined ? Number(amount) : undefined;
+      const res = applyBetAction(game, player.id, action, numAmount, rngFor(game.roomId));
+      if (!res.ok) {
+        if (res.error) socket.emit('error', res.error);
+        return;
+      }
+      onPhasePotentiallyChanged(game, prevPhase, res.nextPhase);
+      broadcastRoom(game.roomId);
+    });
 
-      advanceTurn(game);
-      io.to(roomId).emit('gameStateUpdate', game);
+    socket.on('skipTurn', () => {
+      const actor = resolveActor(socket.id);
+      if (!actor) return;
+      const { game, player } = actor;
+      if (game.hostId !== player.id) {
+        socket.emit('error', 'Only the host can skip an inactive seat.');
+        return;
+      }
+      const active = game.players[game.turnIndex];
+      if (!active || active.isFolded) return;
+      const prevPhase = game.currentPhase;
+      let nextPhase = prevPhase;
+      if (game.currentPhase === 'CARD') {
+        game.logs.push(`Host stood for ${active.name}.`);
+        nextPhase = applyCardAction(game, active.id, 'stand', undefined, rngFor(game.roomId)).nextPhase;
+      } else if (game.currentPhase === 'BETTING') {
+        const canCheck = game.currentBet <= active.betThisRound;
+        game.logs.push(`Host ${canCheck ? 'checked' : 'folded'} for ${active.name}.`);
+        nextPhase = applyBetAction(
+          game,
+          active.id,
+          canCheck ? 'check' : 'fold',
+          undefined,
+          rngFor(game.roomId)
+        ).nextPhase;
+      }
+      onPhasePotentiallyChanged(game, prevPhase, nextPhase);
+      broadcastRoom(game.roomId);
+    });
+
+    socket.on('resetTable', () => {
+      const actor = resolveActor(socket.id);
+      if (!actor) return;
+      const { game, player } = actor;
+      if (game.hostId !== player.id) return;
+      if (game.mode === 'cantina_tour' || game.mode === 'daily_kessel') return;
+
+      clearGameFlowTimers(game.roomId);
+      if (game.handPot > 0) {
+        for (const p of game.players) {
+          p.credits += p.contributed;
+          p.contributed = 0;
+          p.betThisRound = 0;
+          syncLedgerPlayer(game, p);
+        }
+        game.handPot = 0;
+        game.logs.push('Hand aborted by host — Hand Pot contributions refunded.');
+      }
+      for (const p of game.players) {
+        p.hand = [];
+        p.isFolded = !!p.isSpectator;
+        p.isReady = !!(p.isAI || p.isSpectator);
+      }
+      game.currentPhase = 'JOINING';
+      game.turnExpires = null;
+      trimLogs(game);
+      broadcastRoom(game.roomId);
+      broadcastLobby();
+    });
+
+    socket.on('emote', ({ text }) => {
+      const actor = resolveActor(socket.id);
+      if (!actor) return;
+      const { game, player } = actor;
+      const clean = String(text ?? '').trim();
+      if (!(QUICK_EMOTES as readonly string[]).includes(clean)) return;
+      player.lastAction = { text: clean, tone: 'emote', timestamp: Date.now() };
+      broadcastRoom(game.roomId);
     });
 
     socket.on('chatMessage', ({ text }) => {
       const actor = resolveActor(socket.id);
       if (!actor) return;
       const { game, player } = actor;
-      const roomId = game.roomId;
 
-      const message = String(text ?? '').replace(/[\p{Cc}\p{Cf}]/gu, '').trim().slice(0, MAX_CHAT_LENGTH);
+      const raw = String(text ?? '')
+        .replace(/[\p{Cc}\p{Cf}]/gu, '')
+        .trim()
+        .slice(0, MAX_CHAT_LENGTH);
+      const message = filterProfanity(raw);
       if (!message) return;
 
       game.messages.push({
         sender: player.name,
         text: message,
-        timestamp: Date.now()
+        timestamp: Date.now(),
       });
-
       if (game.messages.length > 50) game.messages.shift();
-      
-      io.to(roomId).emit('gameStateUpdate', game);
+      broadcastRoom(game.roomId);
+    });
+
+    socket.on('reportPlayer', ({ targetName, reason }) => {
+      const actor = resolveActor(socket.id);
+      if (!actor) return;
+      const { game, player } = actor;
+      const cleanTarget = String(targetName ?? '').trim().slice(0, MAX_NAME_LENGTH);
+      if (!cleanTarget) return;
+      recentReports.push({
+        id: randomUUID(),
+        roomId: game.roomId,
+        reporterName: player.name,
+        reportedName: cleanTarget,
+        reason: String(reason ?? 'Disruptive conduct').trim().slice(0, 120),
+        timestamp: Date.now(),
+      });
+      if (recentReports.length > 100) recentReports.shift();
     });
 
     socket.on('disconnect', () => {
-      console.log('User disconnected:', socket.id);
-
       rateBuckets.delete(socket.id);
       const session = sessionsBySocket.get(socket.id);
       sessionsBySocket.delete(socket.id);
@@ -638,440 +1518,67 @@ async function bootstrap() {
       const player = game.players[index];
 
       player.isConnected = false;
+      ensureHost(game);
 
       if (game.currentPhase === 'JOINING') {
-        // Hold the seat so a refresh keeps their name and credits, but release
-        // it if they really left. The ready check ignores them meanwhile, so a
-        // ghost in the lobby cannot block the table from starting.
         game.logs.push(`${player.name} lost connection.`);
-        pendingRemoval.set(player.id, setTimeout(() => {
-          pendingRemoval.delete(player.id);
-          const current = games[roomId];
-          if (!current) return;
-          const at = current.players.findIndex(p => p.id === session.playerId);
-          if (at === -1 || current.players[at].isConnected) return;
-          current.players.splice(at, 1);
-          sessionsByToken.delete(session.token);
-          current.logs.push(`${player.name} left the room.`);
-          io.to(roomId).emit('gameStateUpdate', current);
-        }, ROOM_GRACE_PERIOD_MS));
+        pendingRemoval.set(
+          player.id,
+          setTimeout(() => {
+            pendingRemoval.delete(player.id);
+            const current = games[roomId];
+            if (!current) return;
+            const at = current.players.findIndex(p => p.id === session.playerId);
+            if (at === -1 || current.players[at].isConnected) return;
+            current.players.splice(at, 1);
+            sessionsByToken.delete(session.token);
+            ensureHost(current);
+            current.logs.push(`${player.name} left the room.`);
+            trimLogs(current);
+            broadcastRoom(roomId);
+            broadcastLobby();
+          }, ROOM_GRACE_PERIOD_MS)
+        );
       } else {
-        // Mid-hand: keep the seat and their stake in the pot so they can
-        // reconnect, but do not let the table wait on them.
-        game.logs.push(`${player.name} lost connection.`);
-        if (currentTurnPlayer(game)?.id === player.id) {
-          game.logs.push(`${player.name} folded after losing connection.`);
-          player.isFolded = true;
-          advanceTurn(game);
+        game.logs.push(`${player.name} disconnected.`);
+        if (game.players[game.turnIndex]?.id === player.id) {
+          const prevPhase: GameState['currentPhase'] = game.currentPhase;
+          let nextPhase: GameState['currentPhase'] = prevPhase;
+          if (game.currentPhase === 'CARD') {
+            player.isFolded = true;
+            nextPhase = applyCardAction(game, player.id, 'stand', undefined, rngFor(roomId)).nextPhase;
+          } else if (game.currentPhase === 'BETTING') {
+            nextPhase = applyBetAction(game, player.id, 'fold', undefined, rngFor(roomId)).nextPhase;
+          }
+          onPhasePotentiallyChanged(game, prevPhase, nextPhase);
         }
       }
 
-      // Clean up room if no connected humans are left, after a grace period so
-      // that a refresh does not destroy the room.
       const liveHumans = game.players.filter(p => !p.isAI && p.isConnected);
       if (liveHumans.length === 0) {
-        laterInRoom(roomId, () => {
-          if (games[roomId].players.some(p => !p.isAI && p.isConnected)) return;
-          destroyRoom(roomId);
-        }, ROOM_GRACE_PERIOD_MS);
+        scheduleNamed(
+          roomId,
+          'roomReap',
+          () => {
+            if (games[roomId]?.players.some(p => !p.isAI && p.isConnected)) return;
+            destroyRoom(roomId);
+          },
+          ROOM_GRACE_PERIOD_MS
+        );
       }
 
-      io.to(roomId).emit('gameStateUpdate', game);
+      trimLogs(game);
+      broadcastRoom(roomId);
+      broadcastLobby();
     });
-  });
-
-  function startGame(game: GameState) {
-    game.currentPhase = 'CARD';
-    game.currentRound = 1;
-    game.deck = shuffle(createDeck());
-    game.discardPile = [game.deck.pop()!]; // Top card turned face up
-    game.handPot = 0;
-    game.winnerId = null;
-    game.currentBet = 0;
-    
-    // Rotate dealer
-    game.dealerIndex = (game.dealerIndex + 1) % game.players.length;
-    game.logs.push(`Game started! ${game.players[game.dealerIndex].name} is the dealer.`);
-
-    // Ante
-    const ante = 10;
-    const sabaccAnte = 5;
-    const totalAnte = ante + sabaccAnte;
-    
-    game.players.forEach(p => {
-      if (p.isSpectator) {
-        p.isFolded = true;
-        p.hand = [];
-        p.betThisRound = 0;
-        return;
-      }
-
-      if (p.credits < totalAnte) {
-        p.isFolded = true;
-        p.hand = [];
-        p.betThisRound = 0;
-        game.logs.push(`${p.name} doesn't have enough credits to ante and sits out.`);
-      } else {
-        p.credits -= totalAnte;
-        game.handPot += ante;
-        game.sabaccPot += sabaccAnte;
-        p.hand = [game.deck.pop()!, game.deck.pop()!];
-        p.isFolded = false;
-        p.betThisRound = 0;
-      }
-    });
-    game.logs.push(`Active players paid ${totalAnte} CR ante.`);
-    
-    // Set turn index to first non-spectator, non-folded player AFTER the dealer
-    let nextIndex = (game.dealerIndex + 1) % game.players.length;
-    let attempts = 0;
-    while ((game.players[nextIndex].isFolded || game.players[nextIndex].isSpectator) && attempts < game.players.length) {
-      nextIndex = (nextIndex + 1) % game.players.length;
-      attempts++;
-    }
-    game.turnIndex = nextIndex;
-    
-    checkAndProcessAITurn(game);
-  }
-
-  function checkAndProcessAITurn(game: GameState) {
-    const currentPlayer = game.players[game.turnIndex];
-    if (currentPlayer && currentPlayer.isAI && !currentPlayer.isFolded && (game.currentPhase === 'CARD' || game.currentPhase === 'BETTING')) {
-      laterInRoom(game.roomId, () => {
-        processAITurn(game);
-      }, 1500); // Delay for realism
-    }
-  }
-
-  function processAITurn(game: GameState) {
-    const currentPlayer = game.players[game.turnIndex];
-    if (!currentPlayer || !currentPlayer.isAI) return;
-
-    if (game.currentPhase === 'CARD') {
-      const evaluation = evaluateHand(currentPlayer.hand);
-      const isSabacc = evaluation.score >= 1000000;
-      const absSum = evaluation.absSum;
-      
-      // AI Logic:
-      // 1. If hand is already a Sabacc (sum 0), Stand.
-      if (isSabacc) {
-        game.logs.push(`${currentPlayer.name} stood.`);
-      } 
-      // 2. If hand is very close to 0 (absSum <= 1) and we have 3+ cards, Stand.
-      else if (absSum <= 1 && currentPlayer.hand.length >= 3) {
-        game.logs.push(`${currentPlayer.name} stood.`);
-      }
-      // 3. If we have only 2 cards, always Draw or Swap unless we are at 0.
-      else if (currentPlayer.hand.length < 3) {
-        // If we are far from 0, draw.
-        if (absSum > 5) {
-          const card = game.deck.pop();
-          if (card) currentPlayer.hand.push(card);
-          game.logs.push(`${currentPlayer.name} drew a card from the deck.`);
-        } else {
-          // Try to swap the worst card
-          const currentSum = evaluation.sum;
-          let bestCardToSwap = currentPlayer.hand[0];
-          let maxImpact = -1;
-
-          currentPlayer.hand.forEach(card => {
-            const impact = Math.abs(currentSum) - Math.abs(currentSum - card.value);
-            if (impact > maxImpact) {
-              maxImpact = impact;
-              bestCardToSwap = card;
-            }
-          });
-
-          const topDiscard = game.discardPile[game.discardPile.length - 1];
-          const wouldImproveWithDiscard = topDiscard && Math.abs(currentSum - bestCardToSwap.value + topDiscard.value) < Math.abs(currentSum);
-
-          if (wouldImproveWithDiscard) {
-            const cardIndex = currentPlayer.hand.findIndex(c => c.id === bestCardToSwap.id);
-            const [discarded] = currentPlayer.hand.splice(cardIndex, 1);
-            const newCard = game.discardPile.pop()!;
-            game.discardPile.push(discarded);
-            currentPlayer.hand.push(newCard);
-            game.logs.push(`${currentPlayer.name} swapped a card with the discard pile.`);
-          } else {
-            const cardIndex = currentPlayer.hand.findIndex(c => c.id === bestCardToSwap.id);
-            const [discarded] = currentPlayer.hand.splice(cardIndex, 1);
-            game.discardPile.push(discarded);
-            const newCard = game.deck.pop();
-            if (newCard) currentPlayer.hand.push(newCard);
-            game.logs.push(`${currentPlayer.name} swapped a card with the deck.`);
-          }
-        }
-      } 
-      // 4. If we have 3+ cards and not close to 0, try to swap or draw.
-      else {
-        const currentSum = evaluation.sum;
-        let bestCardToSwap = currentPlayer.hand[0];
-        let maxImpact = -1;
-
-        currentPlayer.hand.forEach(card => {
-          const impact = Math.abs(currentSum) - Math.abs(currentSum - card.value);
-          if (impact > maxImpact) {
-            maxImpact = impact;
-            bestCardToSwap = card;
-          }
-        });
-
-        const topDiscard = game.discardPile[game.discardPile.length - 1];
-        const wouldImproveWithDiscard = topDiscard && Math.abs(currentSum - bestCardToSwap.value + topDiscard.value) < Math.abs(currentSum);
-
-        if (wouldImproveWithDiscard) {
-          const cardIndex = currentPlayer.hand.findIndex(c => c.id === bestCardToSwap.id);
-          const [discarded] = currentPlayer.hand.splice(cardIndex, 1);
-          const newCard = game.discardPile.pop()!;
-          game.discardPile.push(discarded);
-          currentPlayer.hand.push(newCard);
-          game.logs.push(`${currentPlayer.name} swapped a card with the discard pile.`);
-        } else if (absSum > 3 && currentPlayer.hand.length < 5) {
-          // If still far from 0 and not too many cards, draw.
-          const card = game.deck.pop();
-          if (card) currentPlayer.hand.push(card);
-          game.logs.push(`${currentPlayer.name} drew a card from the deck.`);
-        } else {
-          // Swap with deck as last resort to improve
-          const cardIndex = currentPlayer.hand.findIndex(c => c.id === bestCardToSwap.id);
-          const [discarded] = currentPlayer.hand.splice(cardIndex, 1);
-          game.discardPile.push(discarded);
-          const newCard = game.deck.pop();
-          if (newCard) currentPlayer.hand.push(newCard);
-          game.logs.push(`${currentPlayer.name} swapped a card with the deck.`);
-        }
-      }
-      advanceTurn(game);
-      io.to(game.roomId).emit('gameStateUpdate', game);
-    } else if (game.currentPhase === 'BETTING') {
-      const evaluation = evaluateHand(currentPlayer.hand);
-      const isSabacc = evaluation.score >= 1000000;
-      const absSum = evaluation.absSum;
-      const callAmount = game.currentBet - currentPlayer.betThisRound;
-
-      if (isSabacc) {
-        // Strong hand: Raise or Call
-        if (game.currentBet < 50 && Math.random() > 0.5) {
-          const raiseAmount = 20;
-          const totalToPay = (game.currentBet + raiseAmount) - currentPlayer.betThisRound;
-          if (currentPlayer.credits >= totalToPay) {
-            currentPlayer.credits -= totalToPay;
-            currentPlayer.betThisRound += totalToPay;
-            game.handPot += totalToPay;
-            game.currentBet += raiseAmount;
-            game.logs.push(`${currentPlayer.name} raised to ${game.currentBet}.`);
-          } else {
-            // Call instead
-            const actualCall = Math.min(callAmount, currentPlayer.credits);
-            currentPlayer.credits -= actualCall;
-            currentPlayer.betThisRound += actualCall;
-            game.handPot += actualCall;
-            game.logs.push(`${currentPlayer.name} called${actualCall < callAmount ? ' ALL IN' : ''}.`);
-          }
-        } else {
-          const actualCall = Math.min(callAmount, currentPlayer.credits);
-          currentPlayer.credits -= actualCall;
-          currentPlayer.betThisRound += actualCall;
-          game.handPot += actualCall;
-          game.logs.push(`${currentPlayer.name} called${actualCall < callAmount ? ' ALL IN' : ''}.`);
-        }
-      } else if (absSum <= 5) {
-        // Decent hand: Call
-        if (callAmount <= 50) {
-          const actualCall = Math.min(callAmount, currentPlayer.credits);
-          currentPlayer.credits -= actualCall;
-          currentPlayer.betThisRound += actualCall;
-          game.handPot += actualCall;
-          game.logs.push(`${currentPlayer.name} called${actualCall < callAmount ? ' ALL IN' : ''}.`);
-        } else {
-          currentPlayer.isFolded = true;
-          game.logs.push(`${currentPlayer.name} folded.`);
-        }
-      } else {
-        // Weak hand: Fold if bet is high, otherwise call
-        if (callAmount > 20) {
-          currentPlayer.isFolded = true;
-          game.logs.push(`${currentPlayer.name} folded.`);
-        } else {
-          const actualCall = Math.min(callAmount, currentPlayer.credits);
-          currentPlayer.credits -= actualCall;
-          currentPlayer.betThisRound += actualCall;
-          game.handPot += actualCall;
-          game.logs.push(`${currentPlayer.name} called${actualCall < callAmount ? ' ALL IN' : ''}.`);
-        }
-      }
-      advanceTurn(game);
-      io.to(game.roomId).emit('gameStateUpdate', game);
-    }
-  }
-
-  function advanceTurn(game: GameState) {
-    const activePlayers = game.players.filter(p => !p.isFolded && !p.isSpectator);
-    
-    if (activePlayers.length <= 1) {
-      game.logs.push("Only one player remains. Ending round.");
-      game.currentPhase = 'SHOWDOWN';
-      handleShowdown(game);
-      return;
-    }
-
-    let nextIndex = game.turnIndex;
-    let passedDealer = false;
-    let attempts = 0;
-    
-    do {
-      if (nextIndex === game.dealerIndex) passedDealer = true;
-      nextIndex = (nextIndex + 1) % game.players.length;
-      attempts++;
-    } while (
-      (game.players[nextIndex].isFolded || 
-       game.players[nextIndex].isSpectator || 
-       (game.currentPhase === 'BETTING' && game.players[nextIndex].credits === 0)) 
-      && attempts < game.players.length
-    );
-
-    game.turnIndex = nextIndex;
-
-    // Phase transition logic
-    if (passedDealer) {
-      if (game.currentPhase === 'CARD') {
-        game.currentPhase = 'BETTING';
-        game.currentBet = 0;
-        game.bettingLapComplete = false;
-        game.players.forEach(p => p.betThisRound = 0);
-        game.logs.push("Betting Phase started.");
-      } else if (game.currentPhase === 'BETTING') {
-        game.bettingLapComplete = true;
-      }
-    }
-
-    if (game.currentPhase === 'BETTING') {
-      const allMatched = activePlayers.every(p => p.credits === 0 || p.betThisRound === game.currentBet);
-      if (game.bettingLapComplete && allMatched) {
-        game.currentPhase = 'DICE';
-        handleDicePhase(game);
-      }
-    }
-
-    checkAndProcessAITurn(game);
-  }
-
-  function handleDicePhase(game: GameState) {
-    const d1 = Math.floor(Math.random() * 6) + 1;
-    const d2 = Math.floor(Math.random() * 6) + 1;
-    game.lastDiceRoll = [d1, d2];
-    game.logs.push(`Dice rolled: ${d1}, ${d2}`);
-
-    if (d1 === d2) {
-      game.logs.push("SABACC SHIFT! All hands discarded and redealt.");
-      game.players.forEach(p => {
-        if (!p.isFolded) {
-          const count = p.hand.length;
-          game.discardPile.push(...p.hand);
-          p.hand = [];
-          for (let i = 0; i < count; i++) {
-            if (game.deck.length === 0) {
-              game.deck = shuffle(createDeck());
-            }
-            p.hand.push(game.deck.pop()!);
-          }
-        }
-      });
-    }
-
-    // Stay in DICE phase for 3 seconds so players can see the result
-    io.to(game.roomId).emit('gameStateUpdate', game);
-
-    laterInRoom(game.roomId, () => {
-      if (game.currentRound < 3) {
-        game.currentRound++;
-        game.currentPhase = 'CARD';
-        
-        let nextIndex = game.dealerIndex;
-        let attempts = 0;
-        do {
-          nextIndex = (nextIndex + 1) % game.players.length;
-          attempts++;
-        } while ((game.players[nextIndex].isFolded || game.players[nextIndex].isSpectator) && attempts < game.players.length);
-        game.turnIndex = nextIndex;
-        
-        game.logs.push(`Round ${game.currentRound} Card Phase started.`);
-        checkAndProcessAITurn(game);
-      } else {
-        game.currentPhase = 'SHOWDOWN';
-        handleShowdown(game);
-      }
-      io.to(game.roomId).emit('gameStateUpdate', game);
-    }, 3000);
-  }
-
-  function handleShowdown(game: GameState) {
-    const activePlayers = game.players.filter(p => !p.isFolded);
-    if (activePlayers.length === 0) {
-      game.logs.push("No active players. Pots carry over.");
-      return;
-    }
-
-    const results = activePlayers.map(p => ({
-      player: p,
-      evaluation: evaluateHand(p.hand)
-    }));
-
-    results.sort((a, b) => b.evaluation.score - a.evaluation.score);
-    const winner = results[0].player;
-    
-    game.winnerId = winner.id;
-    game.logs.push(`Winner: ${winner.name} with ${results[0].evaluation.rankName}`);
-    
-    winner.credits += game.handPot;
-    if (results[0].evaluation.sum === 0) {
-      if (results[0].evaluation.score >= 50 * 1000000) {
-        winner.credits += game.sabaccPot;
-        game.sabaccPot = 0;
-        game.logs.push(`${winner.name} takes the Sabacc Pot with a specialty hand!`);
-      } else {
-        game.logs.push(`${winner.name} won with a regular Sabacc. Sabacc Pot carries over.`);
-      }
-    }
-    game.handPot = 0;
-    game.gamesPlayed++;
-    
-    game.currentPhase = 'SHOWDOWN';
-    game.players.forEach(p => {
-      p.isReady = (p.isAI || p.isSpectator) ? true : false;
-      
-      // Auto-switch to spectator if out of credits
-      if (!p.isSpectator && p.credits < 15) {
-        p.isSpectator = true;
-        p.isReady = true;
-        p.isFolded = true;
-        game.logs.push(`${p.name} is out of credits and switched to spectating.`);
-      }
-    });
-    io.to(game.roomId).emit('gameStateUpdate', game);
-
-    laterInRoom(game.roomId, () => {
-      if (game.currentPhase === 'SHOWDOWN') {
-        game.currentPhase = 'JOINING';
-        io.to(game.roomId).emit('gameStateUpdate', game);
-      }
-    }, 10000); // 10 second delay for players to see results
-  }
-
-  // Liveness for containers and uptime checks. Declared before the catch-all.
-  expressApp.get('/healthz', (_req, res) => {
-    res.json({ ok: true, rooms: Object.keys(games).length, uptime: Math.round(process.uptime()) });
   });
 
   if (staticDir) {
-    expressApp.use(express.static(staticDir));
-    // Single-page app: anything unmatched falls back to the entry document.
+    expressApp.use(express.static(staticDir, { extensions: ['html'] }));
     expressApp.get(/.*/, (_req, res) => {
       res.sendFile(join(staticDir, 'index.html'));
     });
   } else {
-    // Imported lazily so the packaged binary, which never takes this path, does
-    // not need the Next runtime bundled into it.
     const next = (await import('next')).default;
     const app = next({ dev });
     const handle = app.getRequestHandler();
@@ -1084,15 +1591,26 @@ async function bootstrap() {
 
   server.listen(port, () => {
     console.log(`> Ready on http://localhost:${port}`);
-    if (staticDir) {
-      for (const address of localAddresses()) {
-        console.log(`> On your network: http://${address}:${port}`);
-      }
+    for (const address of localAddresses()) {
+      console.log(`> On your network: http://${address}:${port}`);
     }
   });
+
+  // Graceful container shutdown on SIGTERM / SIGINT
+  const shutdown = (signal: string) => {
+    console.log(`> Received ${signal}, shutting down holotable gracefully...`);
+    for (const roomId of Object.keys(games)) {
+      for (const handle of roomNamedTimers.get(roomId)?.values() ?? []) clearTimeout(handle);
+    }
+    for (const handle of pendingRemoval.values()) clearTimeout(handle);
+    io.close();
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-// Lets the host read out an address their friends can actually reach.
 function localAddresses(): string[] {
   return Object.values(networkInterfaces())
     .flat()
@@ -1100,7 +1618,7 @@ function localAddresses(): string[] {
     .map(info => info.address);
 }
 
-bootstrap().catch((err) => {
+bootstrap().catch(err => {
   console.error('Failed to start server:', err);
   process.exit(1);
 });

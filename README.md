@@ -1,292 +1,165 @@
 # Corellian Spike Sabacc
 
-[![GHCR](https://img.shields.io/badge/GHCR-ghcr.io/thenotoriousjeremy/sabacc-blue)](https://github.com/thenotoriousjeremy/sabacc/pkgs/container/sabacc)
+[![GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Fthenotoriousjeremy%2Fsabacc-blue)](https://github.com/thenotoriousjeremy/sabacc/pkgs/container/sabacc)
+[![Platforms](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-informational)](https://github.com/thenotoriousjeremy/sabacc/pkgs/container/sabacc)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/thenotoriousjeremy/sabacc/ci.yml)](https://github.com/thenotoriousjeremy/sabacc/actions)
-[![GitHub Stars](https://img.shields.io/github/stars/thenotoriousjeremy/sabacc)](https://github.com/thenotoriousjeremy/sabacc/stargazers)
-[![GitHub Issues](https://img.shields.io/github/issues/thenotoriousjeremy/sabacc)](https://github.com/thenotoriousjeremy/sabacc/issues)
 
-A multiplayer web-based version of the 'Corellian Spike' Sabacc game from Star Wars Legends. Experience the thrill of this classic card game with real-time multiplayer gameplay, featuring Sabacc Shifts, betting phases, and a Star Wars aesthetic.
+![Corellian Spike Sabacc — Real Mobile Screenshots](screenshots/mobile-showcase.png)
 
-## Features
+A self-hosted Star Wars **Corellian Spike Sabacc** holotable featuring a persistent **Smuggler Vault & Credits-Over-Time Equity Chart**, **Daily Syndicate Bounties & Login Streaks**, a 5-planet roguelite **Cantina Tour**, deterministic **Daily Kessel Runs**, and real-time multiplayer cantina nights — with **Dark & Light sci-fi themes**, **server-wide leaderboards**, **Discord webhooks**, **site password / OIDC SSO**, and **offline mobile support**.
 
-- **Multiplayer Gameplay**: Real-time multiplayer using Socket.io for seamless interaction.
-- **Authentic Deck**: 62-card deck with 30 positive, 30 negative cards, and 2 Sylops.
-- **Game Phases**: Structured rounds with Card, Betting, and Dice phases.
-- **Credit System**: Manage credits, antes, and pots with automatic balance updates.
-- **Sabacc Shift**: Random Spike Dice rolls can trigger hand redeals for added excitement.
-- **Star Wars Theme**: Dark UI with neon accents inspired by the Star Wars universe.
-- **Cross-Platform**: Runs on any device with a modern web browser.
+---
 
-## Screenshots
+## Key Features
 
-![Game Screenshot](screenshots/screenshot.PNG)
+- **Persistent Credits Over Time & Progression**:
+  - **Smuggler Vault & Equity Chart**: Credits carry across Quick Play sessions with a rolling **120-hand Credits Over Time chart** (toggle between *Vault Balance* and *Honest Career Net P&L*, unaffected by free stipends or Hutt bailouts) plus a **30-day session calendar**.
+  - **Server-Wide Cantina Standings (`/data/pilots.json`)**: Self-hosted servers automatically persist every human pilot's all-time net credits, win rate, equity sparkline, and **Today's Kessel Run leaderboard**.
+  - **Daily Syndicate Bounties & Login Streaks**: 3 deterministic UTC-seeded contracts every day (`+400 CR` Full Sweep bonus), escalating **Daily HoloNet Login Stipends** (`+150` to `+500 CR`), and **8 Reputation Ranks** (*Docking Bay Novice* → *Sabacc Grandmaster*).
+- **4 Game Modes**:
+  - **Quick Play**: 1-click table staking your persistent Vault against Star Wars cantina personas (*Novice*, *Regular*, and exact-enumerating *Shark* solvers) with live **Zero-Lock card-counting outs** on your turn.
+  - **Outer Rim Cantina Tour**: 5-stage locked-bankroll gauntlet (*Mos Eisley → Coronet → Fort Ypso → Cloud City → Canto Bight*) that unlocks table felts, Beskar/Halcyon card backs, and Spike Dice finishes.
+  - **Daily Kessel Run**: Deterministic UTC-seeded 5-hand sprint (`250 CR`) with server daily rankings and 1-click Discord score sharing.
+  - **Multiplayer Party**: 5-character sector codes, `?room=CODE` deep links, scannable **LAN QR Invite**, and a real-time **Active Server Tables** radar so everyone on your server sees when a game is open.
+- **Mobile, PWA & Standalone Android App**:
+  - Edge-to-edge touch UI with notch/home-bar safe areas, installable as a full-screen **iOS / Android PWA** (*Add to Home Screen*) or via the **Android APK** (`sabacc-android.apk`).
+  - **Offline On-Device Engine**: Solo modes (*Quick*, *Tour*, *Daily*) run directly on-device via `LocalGameTransport` when offline or without a server; Multiplayer connects to any self-hosted server.
+- **Dark Holotable & Light Rebel Data-Slate Themes**:
+  - Toggle anytime (`☀` / `☾`) between **Outer Rim Dark Holotable** and high-contrast **Bespin / Rebel Ivory Data-Slate** light mode.
+- **Self-Hosted Security, OIDC & Admin Console**:
+  - **Password Gate (`SITE_PASSWORD`)**: Lock the entire web UI and Socket.IO server behind an access code.
+  - **Native OIDC + PKCE**: Works out-of-the-box with **Authentik, Authelia, Keycloak, Pocket-ID**, etc., auto-filling player callsigns and mapping admin groups.
+  - **Live Admin Console** (shield icon): Rotate site passwords, set server banners, manage active rooms, lock bankrolls globally, and configure/test Discord webhooks — persisted to `/data/config.json`.
+- **Discord Webhook Integration**:
+  - Automatically posts rich embeds when a multiplayer table opens (with a clickable `?room=CODE` join link!), when a Specialty Sabacc sweeps a big Sabacc Pot, or when players share Daily Kessel Run scores.
 
-## Installation
+---
 
-Corellian Spike Sabacc can be installed from a release binary, using Docker,
-Docker Compose, or manually. A release binary is the easiest way to host a game
-for friends; Docker is recommended for a long-running public deployment.
+## Deployment
 
-### Release binary (no Node required)
+### Docker Compose (Recommended)
 
-1. Download the host archive for your platform from
-   [Releases](https://github.com/thenotoriousjeremy/sabacc/releases).
-2. Unpack it, keeping `sabacc-host` and the `web` folder together.
-3. Run `sabacc-host`. It prints the addresses it is reachable on:
-
-   ```
-   > Ready on http://localhost:3000
-   > On your network: http://192.168.1.8:3000
-   ```
-
-4. Share the network address with your friends, then create a table and read
-   them the room code.
-
-### Android client
-
-The APK is a **client only** — someone still has to host, using a binary,
-Docker, or `npm start`. Install `sabacc-android.apk` from the same release, then
-enter the host address the server printed followed by the room code.
-
-The APK is debug-signed, so Android will warn about installing from an unknown
-source.
-
-### Docker
-
-To run the application using Docker:
-
-1. Pull the latest image from GitHub Container Registry:
-   ```bash
-   docker pull ghcr.io/thenotoriousjeremy/sabacc:latest
-   ```
-
-2. Run the container:
-   ```bash
-   docker run -d \
-     --name sabacc \
-     -p 3000:3000 \
-     -e NODE_ENV=production \
-     -e TZ=Etc/UTC \
-     ghcr.io/thenotoriousjeremy/sabacc:latest
-   ```
-
-The application will be available at `http://localhost:3000`.
-
-### Docker Compose
-
-For a more robust setup with automatic restarts and easier management, use Docker Compose. Create a `docker-compose.yml` file with the following content:
+A ready-to-run [`compose.yaml`](compose.yaml) is included (`linux/amd64` and `linux/arm64` / Raspberry Pi / Apple Silicon supported):
 
 ```yaml
-version: '3.8'
-
 services:
   sabacc:
     image: ghcr.io/thenotoriousjeremy/sabacc:latest
     container_name: sabacc
+    restart: unless-stopped
     ports:
       - "3000:3000"
+    volumes:
+      - ./data:/data
     environment:
-      - NODE_ENV=production
-      - TZ=Etc/UTC
-    restart: unless-stopped
+      TZ: America/New_York
+      PUID: 1000
+      PGID: 1000
+      # Optional:
+      # PUBLIC_URL: https://sabacc.example.com
+      # TRUST_PROXY: "true"
+      # SITE_PASSWORD: your-cantina-password
+      # ADMIN_PASSWORD: your-admin-password
+      # SESSION_SECRET: replace-with-random-secret
+      # DISCORD_WEBHOOK_URL: https://discord.com/api/webhooks/...
 ```
-
-Then run:
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
-To view logs:
-```bash
-docker-compose logs -f sabacc
-```
+### Standalone Release Binary (No Node or Docker Required)
 
-To stop:
-```bash
-docker-compose down
-```
+1. Download the `sabacc-host` archive for Windows, macOS, or Linux from [Releases](https://github.com/thenotoriousjeremy/sabacc/releases).
+2. Unpack it (keeping `sabacc-host` and `web/` together) and run `./sabacc-host`.
+3. Scan the in-game **QR Invite** from any phone on your Wi-Fi to sit straight at the table.
 
-### Manual Installation
+### Mobile Installation & App Store Readiness
 
-If you prefer to run the application directly on your system:
+- **iOS & Android (PWA)**: Open your hosted URL in Safari (iOS) or Chrome (Android) and tap **Share → Add to Home Screen** for a full-screen standalone app (`>=44×44px` touch targets, notch/home-bar safe areas, no rubber-band bounce).
+- **Android APK / Capacitor**: Run `npm run build:apk` (or install `sabacc-android.apk`). Solo modes (*Play*, *Tour*, *Daily*) run **100% offline on-device**; *Friends* connects to any LAN or remote server.
+- **App Store & Google Play Compliance Built-In**:
+  - **Play-Only Credits Disclosure**: Explicit in-app (`Privacy & Fair Play`) and public `/privacy` disclosures confirming zero real-money wagering, cash-outs, or IAP chip sales (Apple Guideline 5.3.4 / Google Play Simulated Gambling).
+  - **Privacy Policy & In-App Data Erasure**: Static `/privacy` policy URL plus 1-tap **Erase My Data** (`localStorage` + `POST /api/pilot/delete`) inside Profile & Privacy (Apple Guideline 5.1.1 / GDPR).
+  - **Multiplayer UGC Safety**: Automated callsign/chat profanity filtering (`lib/moderation.ts`), global **Chat On/Off** toggle, and per-seat **Mute** & **Report** controls (Apple Guideline 1.2).
 
-1. **Prerequisites**:
-   - Node.js 20.9+ and npm
-   - Git
+---
 
-2. Clone the repository:
-   ```bash
-   git clone https://github.com/thenotoriousjeremy/sabacc.git
-   cd sabacc
-   ```
+## Configuration & Environment Variables
 
-3. Install dependencies:
-   ```bash
-   npm install
-   ```
+See [`.env.example`](.env.example) for a complete template. Runtime changes made in the **Admin Console** (shield icon on the home screen) are saved to `/data/config.json`.
 
-4. For development:
-   ```bash
-   npm run dev
-   ```
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `PORT` | `3000` | HTTP & Socket.IO port. |
+| `CONFIG_DIR` | `/data` (`./data` local) | Persistent directory for `config.json` admin settings. |
+| `PUID` / `PGID` | `1000` / `1000` | Container user/group IDs owning `/data` (LinuxServer-style). |
+| `TZ` | `Etc/UTC` | Container timezone. |
+| `TRUST_PROXY` | `false` | Set `true` behind Traefik, Caddy, Nginx, or Cloudflare Tunnel. |
+| `PUBLIC_URL` | *(unset)* | External URL (e.g. `https://sabacc.example.com`) for Discord join links & OIDC callbacks. |
+| `ALLOWED_ORIGINS` | *(LAN + same-origin)* | Comma-separated Socket.IO origin allowlist for cross-origin setups. |
+| `SESSION_SECRET` | *(random on boot)* | Secret for signing `HttpOnly` auth cookies (set a fixed string in production). |
+| `SITE_PASSWORD` | *(unset)* | Password-restricts the entire site and all WebSocket connections. |
+| `ADMIN_PASSWORD` | *(unset)* | Unlocks the **Admin Console** (`⚙` shield button). On `localhost` first run, can also be bootstrapped in the UI. |
+| `DISCORD_WEBHOOK_URL` | *(unset)* | Discord channel webhook (`https://discord.com/api/webhooks/...`) for table-open alerts, jackpots & score shares. |
 
-5. For production:
-   ```bash
-   npm run build
-   npm start
-   ```
+### OpenID Connect (OIDC) Setup
 
-The application will start on `http://localhost:3000`.
+Register `${PUBLIC_URL}/api/auth/oidc/callback` as an allowed redirect URI in Authentik, Authelia, Keycloak, or Pocket-ID:
 
-## Configuration
+| Variable | Description |
+| :--- | :--- |
+| `OIDC_ISSUER_URL` | Provider issuer URL (must serve `/.well-known/openid-configuration`). |
+| `OIDC_CLIENT_ID` | OIDC client ID. |
+| `OIDC_CLIENT_SECRET` | OIDC client secret (optional for public PKCE clients). |
+| `OIDC_PROVIDER_NAME` | Button label shown on login (default `SSO`, e.g. `Authentik`). |
+| `OIDC_REQUIRE_AUTH` | Set `true` to require SSO login before accessing the site. |
+| `OIDC_ALLOWED_GROUP` | Optional group required in `groups` claim to enter. |
+| `OIDC_ADMIN_GROUP` | Group name that automatically grants Server Admin access. |
+| `OIDC_ADMIN_EMAILS` | Comma-separated emails that automatically receive Server Admin access. |
 
-The application uses the following environment variables:
+### Health Probes
 
-- `NODE_ENV`: Set to `production` for production builds
-- `PORT`: Port to run the server on (default: 3000)
-- `TZ`: Timezone (default: Etc/UTC)
-- `ALLOWED_ORIGINS`: Comma-separated origin allowlist for Socket.IO. Leave unset
-  for LAN play, which permits loopback, private network ranges, and the packaged
-  clients. **Set this when exposing the server to the internet** — only the
-  listed origins may then connect.
-- `STATIC_DIR`: Serve a prebuilt static bundle from this directory instead of
-  running Next.js. Set automatically by the Docker image and the host binary.
+- `GET /healthz` → `{ ok: true, rooms, uptime }`
+- `GET /readyz` → `{ ready: true }`
 
-`GET /healthz` returns `{ ok, rooms, uptime }` for container and uptime checks.
+---
 
-## Usage
+## Corellian Spike Rules Summary
 
-1. Open your web browser and navigate to `http://localhost:3000`.
-2. Enter your player name.
-3. Click **Start a New Table** to get a room code, or enter a code you were
-   given and click **Enter Cantina**. Room codes are 5 characters, issued by the
-   server, and shown in the middle of the table — click them to copy.
-4. Wait for other players to join and mark themselves as ready.
-5. Play through the three phases of each round:
-   - **Card Phase**: Draw, swap, or stand.
-   - **Betting Phase**: Call, raise, or fold.
-   - **Dice Phase**: Watch for the Sabacc Shift!
+62-card deck: **30 Positive** (`+1..+10`), **30 Negative** (`-1..-10`), and **2 Sylops** (`0`) across **Circle > Triangle > Square**. Each hand runs **3 rounds** of **Card Phase** (*Draw*, *Swap Shoe*, *Swap Discard*, *Stand*) → **Betting Phase** (with automatic **Side Pots**) → **Spike Dice Check** (doubles trigger a **Sabacc Shift**, discarding and redealing all active hands).
 
-## Game Rules
+### 13-Hand Hierarchy (Highest → Lowest)
 
-This implementation follows the **Corellian Spike variant** of Sabacc.
+1. **Pure Sabacc** (`0, 0`) — *claims Sabacc Pot*
+2. **Full Sabacc** (`0, +10, +10, -10, -10`) — *claims Sabacc Pot*
+3. **Fleet** (Sylop + four of a kind) — *claims Sabacc Pot*
+4. **Yee-Haa** (Sylop + pair) — *claims Sabacc Pot*
+5. **Rhylet** (Three of a kind + pair) — *claims Sabacc Pot*
+6. **Squadron** (Four of a kind) — *claims Sabacc Pot*
+7. **Gee Whiz** (`+1,+2,+3,+4,-10` or `-1,-2,-3,-4,+10`) — *claims Sabacc Pot*
+8. **Straight Khyron** (Sequential run of 4 summing to `0`) — *claims Sabacc Pot*
+9. **Banthas Wild** (Three of a kind summing to `0`) — *claims Sabacc Pot*
+10. **Rule of Two** (Two pairs summing to `0`) — *claims Sabacc Pot*
+11. **Sabacc (Pair)** (One pair summing to `0`) — *claims Sabacc Pot*
+12. **Sabacc** (Non-paired hand summing to `0` — *Sabacc Pot carries over*)
+13. **Nulrhek** (Non-zero total: closest to `0` wins, positive beats negative, then most cards, positive sum, highest positive card, and suit)
 
-### Winning the Game – Hand Hierarchy
-
-Specialty hands – All hands must equal zero and lower integer wins a tie
-
-- **Pure Sabacc** (2 Sylops)
-- **Full Sabacc** (+10, +10, -10, -10, Sylop)
-- **Fleet** (4 of a kind, Sylop): e.g. -5, -5, +5, +5, Sylop or -2, -2, +2, +2, Sylop.
-- **Yee-Haa** (1 pair, Sylop ): e.g. +4, -4, Sylop or +2, +2, -4, Sylop.
-- **Rhylet** (3 of a kind, 1 pair): e.g. +2, +2, +2, -3, -3 or +4, +4, +4, -6, -6.
-- **Squadron** (4 of a kind): e.g. -6, -6, +6, +6 or -1, -1, +1, +1.
-- **Gee Whiz** (+1, +2, +3, +4, -10 or -1, -2, -3, -4, +10)
-- **Straight Khyron** (Run of 4 cards): e.g. +7, -8, -9, +10 or -2, +3, +4, -5.
-- **Banthas Wild** (3 of a kind): e.g. +4, +4, +4, -3, -9 or +5, +5, -5, -3, -2.
-- **Rule of Two** (2 pairs): e.g. -9, +9, -4, +4 or +3, +3, +5, -5, -6.
-- **Sabacc** (1 pair): e.g. +5,-5 or +3, +3, -6.
-
-Non-specialty hands that also equal zero
-
-- **Most Cards**: The hand with the highest number of cards wins.
-- **Highest Positive Sum**: Add all positive numbers in each hand, the hand with the highest sum wins.
-- **Highest Single Positive Value**: The hand with the single highest positive card.
-
-When hands do not equal zero (Nulrhek)
-
-- **Closest to zero**: The hand closest to zero wins
-- **Positive score**: Positive beats negative (+3 beats -3)
-- **Most Cards**: The hand with the most cards wins
-- **Highest Positive Sum**: Add all positive numbers in each hand, the hand with the highest sum wins.
-- **Highest Single Positive Value**: The hand with the single highest positive card.
-
-True Tie
-
-- **Single Blind Draw**: If all of the above scenarios also end in a tie each remaining play draws 1 card. The player closest to zero wins the hand. Positive numbers always beat negative numbers. If players still tie, keep doing the blind draw until a winner is decided.
-  - **Card Suit Ranking**: If you want to avoid the luck of the draw, you can alternatively look at the card suit of the single highest positive card. Circle > Triangle > Square
-
-### Deck Composition
-- 30 positive cards: values 1-10, one in each of the three suits
-- 30 negative cards: values -1 to -10, one in each of the three suits
-- 2 Sylops (value 0, no suit)
-- Suits are Circle, Triangle and Square. A card's value is shown by repeating
-  its suit symbol that many times.
-- **Total: 62 cards**
-
-### Gameplay Phases
-1. **Card Phase** - Players draw, swap, or stand to improve their hands
-2. **Betting Phase** - Players bet credits based on hand strength
-3. **Dice Phase** - The Spike Dice is rolled; if triggered, hands are redealt (Sabacc Shift)
-
-### Antes & Pots
-- **Hand Pot**: Ante 10 credits + all bets
-- **Sabacc Pot**: Fixed 5 credits per player (side pot)
-- **Sabacc Winner**: Gets the Sabacc Pot if they win
-
-For more details, see [How to Play - Sabacc](https://hyperspaceprops.com/how-to-play-corellian-spike/).
-
-## Operational notes
-
-Game state lives in memory in a single process. That is a deliberate trade for a
-game you host for friends, and it has two consequences worth knowing before you
-deploy:
-
-- **Restarting the server ends every game in progress.** There is no persistence.
-- **You cannot run more than one replica.** Socket.IO has no adapter configured,
-  so two instances would not share rooms. Scale up only by giving the one
-  process more room; add a Redis adapter if you ever genuinely need a second.
-
-Rooms are reaped when empty, and abandoned rooms nobody joins are collected
-after two minutes. Every socket is rate limited by a token bucket, sized so
-ordinary play never trips it.
-
-If you expose the server to the internet, set `ALLOWED_ORIGINS`. The default
-policy is built for LAN play and accepts any private-network origin.
-
-## Reconnecting
-
-Seats belong to a session token the server issues on join, not to your name or
-your connection. If you refresh or drop out, you rejoin the same seat with your
-credits and hand intact — the tab remembers the table and reclaims it
-automatically. Seats are held for 60 seconds; dropping mid-hand folds you so the
-table is not left waiting.
-
-Because the token is per-tab, two tabs on one machine are two different players.
+---
 
 ## Development
 
 ```bash
-npm run dev          # Next dev server + Socket.IO on :3000
+npm ci
+npm run dev          # Express + Socket.IO + Next on http://localhost:3000
 npm run typecheck    # tsc --noEmit
-npm run lint
-npm test             # game logic tests
-npm run build:host   # static export + standalone host binary into dist/
-npm run build:apk    # static export + Android APK (needs a JDK and Android SDK)
+npm run lint         # eslint .
+npm test             # 22 unit, solver, security, config & offline transport tests
+npm run build:host   # Static export + single-executable host binary into dist/
+npm run build:apk    # Static export + standalone/multiplayer Capacitor Android APK
 ```
-
-`npm run build:host` uses Node's single-executable support, which cannot
-cross-compile: it produces a binary for the machine it runs on. CI builds all
-three platforms on their own runners.
-
-The `android/` project is generated by `npm run build:apk` rather than committed.
-
-## Contributing
-
-Contributions are welcome! Please fork the repository and submit a pull request.
-
-1. Fork the project
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Support
-
-If you have any questions or issues, please open an issue on GitHub.
+MIT — see [LICENSE](LICENSE).

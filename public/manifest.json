@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Corellian Spike Sabacc",
+  "short_name": "Sabacc",
+  "description": "Free sci-fi Corellian Spike Sabacc card game — Solo, Cantina Tour, Daily Run, and Multiplayer.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#05070b",
+  "theme_color": "#05070b",
+  "orientation": "any",
+  "categories": ["games", "card", "entertainment"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

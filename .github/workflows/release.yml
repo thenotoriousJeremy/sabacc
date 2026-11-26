@@ -20,6 +20,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run lint
       - run: npm test
 
   host:
@@ -106,16 +107,18 @@ jobs:
           files: artifacts/**/*
           generate_release_notes: true
           body: |
-            ## Hosting a game
+            ## Docker (Self-Hosted Server)
 
-            Download the host archive for your platform, unpack it, and run
-            `sabacc-host`. It prints a LAN address to share. Keep the `web`
-            folder next to the binary.
+            ```bash
+            docker pull ghcr.io/thenotoriousjeremy/sabacc:latest
+            ```
 
-            ## Joining from Android
+            Mount `/data` to persist Admin Console settings (`config.json`) and server-wide Cantina Leaderboard standings (`pilots.json`). Set `DISCORD_WEBHOOK_URL`, `PUBLIC_URL`, `SITE_PASSWORD`, `ADMIN_PASSWORD`, or `OIDC_*` variables as needed (see [`compose.yaml`](https://github.com/thenotoriousJeremy/sabacc/blob/main/compose.yaml)).
 
-            Install `sabacc-android.apk`, enter the host address the server
-            printed, then the room code.
+            ## Standalone Host Binary (No Docker or Node Required)
 
-            The APK is debug-signed, so Android will warn about an unknown
-            source on install.
+            Download the `sabacc-host` archive for Windows, macOS, or Linux, unpack it (keeping `web/` beside `sabacc-host`), and run `./sabacc-host`.
+
+            ## Android APK (Offline Solo + Multiplayer)
+
+            Install `sabacc-android.apk` for offline Solo, Cantina Tour, and Daily Kessel Run play, or connect to any self-hosted server under **Friends**. (Debug-signed; allow install from unknown sources.)

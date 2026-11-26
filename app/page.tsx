@@ -1,33 +1,68 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Coins, 
-  User, 
-  Hash, 
-  Play, 
-  RotateCcw, 
-  ArrowRight, 
-  Dices, 
-  LogOut,
+import {
   AlertCircle,
-  Info,
   ChevronLeft,
-  Trophy,
-  X,
+  Coins,
+  Flag,
+  Flame,
   HelpCircle,
-  Settings,
-  Volume2,
+  Menu,
+  Play,
+  QrCode,
+  Smile,
+  Sparkles,
   VolumeX,
-  Eye,
-  Pin,
-  PinOff,
-  Lock
+  X,
 } from 'lucide-react';
-import { GameState, Player, Card, CardType, evaluateHand } from '@/lib/game-logic';
+import { CANTINA_STAGES } from '@/lib/cantina-tour';
+import { formatKesselShareCard, getUtcDateKey } from '@/lib/daily-seed';
+import {
+  BotSkill,
+  ClientGameState,
+  evaluateHand,
+  GameMode,
+  HAND_CODEX_META,
+  LobbySnapshot,
+  Player,
+  previewSwap,
+  spendableFor,
+  StakesTier,
+  TieRule,
+} from '@/lib/game-logic';
+import { armAudio, playCue, setCantinaAmbience, SoundCue, triggerHaptic } from '@/lib/audio';
+import { LocalGameTransport } from '@/lib/local-transport';
+import { QUICK_EMOTES } from '@/lib/personas';
+import {
+  claimDailyStipend,
+  defaultDossier,
+  eraseLocalDossier,
+  FELT_THEMES,
+  loadDossier,
+  PilotDossier,
+  saveDossier,
+  settleShowdownToDossier,
+} from '@/lib/progression';
+import { AdminModal } from '@/app/components/admin-modal';
+import { AnimatedCredits } from '@/app/components/animated-credits';
+import { AuthGate } from '@/app/components/auth-gate';
+import { CommandDrawer } from '@/app/components/command-drawer';
+import { CreditIngotStack } from '@/app/components/credit-chips';
+import { DossierModal, DossierTab } from '@/app/components/dossier-modal';
+import { LandingHub } from '@/app/components/landing-hub';
+import { LedgerModal } from '@/app/components/ledger-modal';
+import { LegalModal } from '@/app/components/legal-modal';
+import { QrInviteModal } from '@/app/components/qr-invite-modal';
+import { RulesDrawer } from '@/app/components/rules-drawer';
 import { SabaccCard } from '@/app/components/sabacc-card';
+import { ShowdownOverlay } from '@/app/components/showdown-overlay';
+import { SpikeDiceCradle, SpikeDiceOverlay } from '@/app/components/spike-dice';
+import { TutorialModal } from '@/app/components/tutorial-modal';
+
+type GameTransport = Socket | LocalGameTransport;
 
 interface StoredSession {
   token: string;
@@ -35,12 +70,21 @@ interface StoredSession {
   roomId: string;
 }
 
-// Seat identity is a server-issued token kept per room. sessionStorage rather
-// than localStorage so two tabs on one machine are two different players.
+interface AuthStatusResponse {
+  locked: boolean;
+  authenticated: boolean;
+  passwordEnabled: boolean;
+  oidcEnabled: boolean;
+  oidcProviderName: string;
+  adminConfigured: boolean;
+  canBootstrapAdmin: boolean;
+  user: { name: string; isAdmin: boolean; authMethod: string } | null;
+}
+
 const sessionKey = (roomId: string) => `sabacc:session:${roomId.toUpperCase()}`;
 
 function loadSession(roomId: string): StoredSession | null {
-  if (typeof window === 'undefined' || !roomId) return null;
+  if (typeof window === 'undefined' || !roomId || roomId === 'LOCAL') return null;
   try {
     const raw = window.sessionStorage.getItem(sessionKey(roomId));
     return raw ? (JSON.parse(raw) as StoredSession) : null;
@@ -50,16 +94,14 @@ function loadSession(roomId: string): StoredSession | null {
 }
 
 function saveSession(session: StoredSession) {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined' || session.roomId === 'LOCAL') return;
   try {
     window.sessionStorage.setItem(sessionKey(session.roomId), JSON.stringify(session));
   } catch {
-    // Private browsing with storage disabled: reconnect degrades to a new seat.
+    // Ignore private-mode storage errors.
   }
 }
 
-// Remembering the table is what makes a refresh land back at the game instead
-// of the join screen; the token then reclaims the seat.
 const LAST_TABLE_KEY = 'sabacc:lastTable';
 
 interface LastTable {
@@ -74,7 +116,6 @@ function loadLastTable(): LastTable | null {
     const raw = window.sessionStorage.getItem(LAST_TABLE_KEY);
     if (!raw) return null;
     const table = JSON.parse(raw) as LastTable;
-    // Only worth restoring if the seat token for it survived too.
     return table.roomId && loadSession(table.roomId) ? table : null;
   } catch {
     return null;
@@ -82,11 +123,11 @@ function loadLastTable(): LastTable | null {
 }
 
 function saveLastTable(table: LastTable) {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined' || table.roomId === 'LOCAL') return;
   try {
     window.sessionStorage.setItem(LAST_TABLE_KEY, JSON.stringify(table));
   } catch {
-    // Non-fatal: refresh falls back to the join screen.
+    // Ignore.
   }
 }
 
@@ -99,8 +140,6 @@ function clearLastTable() {
   }
 }
 
-// Served from the host in browser play, so same-origin is right. The packaged
-// desktop and Android clients have no host of their own and set one of these.
 const HOST_STORAGE_KEY = 'sabacc:serverUrl';
 
 function getServerUrl(): string | undefined {
@@ -109,341 +148,236 @@ function getServerUrl(): string | undefined {
   return window.localStorage.getItem(HOST_STORAGE_KEY) || undefined;
 }
 
-// Build-time only, so it is stable between server render and hydration.
-// The Android bundle is built with NEXT_PUBLIC_REQUIRE_HOST=true; a browser
-// loading the page from a host never needs to be asked where that host is.
 const REQUIRES_HOST_ADDRESS =
   !process.env.NEXT_PUBLIC_SERVER_URL && process.env.NEXT_PUBLIC_REQUIRE_HOST === 'true';
 
 export default function SabaccGame() {
-  const [socket, setSocket] = useState<Socket | null>(null);
-  const [gameState, setGameState] = useState<GameState | null>(null);
+  const [socket, setSocket] = useState<GameTransport | null>(null);
+  const [isLocalSolo, setIsLocalSolo] = useState(false);
+  const [gameState, setGameState] = useState<ClientGameState | null>(null);
+  const [dossier, setDossier] = useState<PilotDossier>(defaultDossier);
   const [playerName, setPlayerName] = useState('');
   const [roomId, setRoomId] = useState('');
   const [isSpectator, setIsSpectator] = useState(false);
   const [isJoined, setIsJoined] = useState(false);
+
+  const [authStatus, setAuthStatus] = useState<AuthStatusResponse>({
+    locked: false,
+    authenticated: true,
+    passwordEnabled: false,
+    oidcEnabled: false,
+    oidcProviderName: 'SSO',
+    adminConfigured: false,
+    canBootstrapAdmin: false,
+    user: null,
+  });
+  const [lobbySnapshot, setLobbySnapshot] = useState<LobbySnapshot | null>(null);
+
+  const [showDrawer, setShowDrawer] = useState(false);
+  const [unreadChat, setUnreadChat] = useState(false);
+  const [showTutorial, setShowTutorial] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [isRulesPinned, setIsRulesPinned] = useState(false);
-  const [betAmount, setBetAmount] = useState('10');
-  const [volume, setVolume] = useState(0.8);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [chatMessage, setChatMessage] = useState('');
-  const [isRollingDice, setIsRollingDice] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [showLog, setShowLog] = useState(false);
+  const [showDossier, setShowDossier] = useState(false);
+  const [dossierTab, setDossierTab] = useState<DossierTab>('vault');
+  const [showLegal, setShowLegal] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
+  const [showLedger, setShowLedger] = useState(false);
+  const [showQrInvite, setShowQrInvite] = useState(false);
+  const [showEmotes, setShowEmotes] = useState(false);
   const [showAllInConfirm, setShowAllInConfirm] = useState(false);
   const [showBuyIn, setShowBuyIn] = useState(false);
   const [buyInAmount, setBuyInAmount] = useState<number>(1000);
-  const [isEditingCredits, setIsEditingCredits] = useState(false);
-  const [newCreditsAmount, setNewCreditsAmount] = useState(0);
+
+  const [betAmount, setBetAmount] = useState('10');
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [pendingSwapMode, setPendingSwapMode] = useState<'swap_deck' | 'swap_discard' | null>(null);
+  const [hoveredCardId, setHoveredCardId] = useState<string | null>(null);
+  const [mutedNames, setMutedNames] = useState<string[]>([]);
+  const [seatMenuPlayerId, setSeatMenuPlayerId] = useState<string | null>(null);
+
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [milestoneBanner, setMilestoneBanner] = useState<string | null>(null);
+  const [chatMessage, setChatMessage] = useState('');
   const [myPlayerId, setMyPlayerId] = useState<string | null>(null);
   const [serverUrl, setServerUrl] = useState('');
-  const needsServerUrl = REQUIRES_HOST_ADDRESS;
 
-  // Deferred so hydration matches the prerendered HTML, which has no access to
-  // stored values. Restores the previous table so a refresh rejoins the game.
+  const [tumbleFirst, setTumbleFirst] = useState(false);
+  const [tumbleSecond, setTumbleSecond] = useState(false);
+  const [shiftShock, setShiftShock] = useState(false);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  const localSoloSpecRef = useRef<{
+    mode: GameMode;
+    stakesTier?: StakesTier;
+    dailyDateKey?: string;
+  } | null>(null);
+
+  const todayKey = useMemo(() => getUtcDateKey(), []);
+
+  const updateDossier = useCallback((patch: Partial<PilotDossier>) => {
+    setDossier(prev => {
+      const next = { ...prev, ...patch };
+      saveDossier(next);
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
-    const stored = window.localStorage.getItem(HOST_STORAGE_KEY);
+    if (typeof document !== 'undefined') {
+      document.documentElement.dataset.theme = dossier.colorMode ?? 'dark';
+    }
+  }, [dossier.colorMode]);
+
+  const volumeRef = useRef(dossier.volume);
+  const hapticsRef = useRef(dossier.haptics);
+  const dossierRef = useRef(dossier);
+  const showDrawerRef = useRef(showDrawer);
+  useEffect(() => {
+    showDrawerRef.current = showDrawer;
+    if (showDrawer) Promise.resolve().then(() => setUnreadChat(false));
+  }, [showDrawer]);
+
+  useEffect(() => {
+    dossierRef.current = dossier;
+    hapticsRef.current = dossier.haptics;
+  }, [dossier]);
+
+  useEffect(() => {
+    volumeRef.current = dossier.volume;
+    setCantinaAmbience(dossier.ambientHum && isJoined, dossier.volume);
+  }, [dossier.volume, dossier.ambientHum, isJoined]);
+
+  const sound = useCallback((cue: SoundCue) => {
+    playCue(cue, volumeRef.current);
+  }, []);
+
+  const handleClaimStipend = useCallback(() => {
+    armAudio();
+    setDossier(curr => {
+      const res = claimDailyStipend(curr, todayKey);
+      if (!res.claimed) return curr;
+      saveDossier(res.dossier);
+      playCue('bounty', volumeRef.current);
+      triggerHaptic([18, 30, 35], curr.haptics);
+      setMilestoneBanner(`DAILY BONUS // +${res.rewardCredits} CR · DAY ${res.streak}`);
+      setTimeout(() => setMilestoneBanner(null), 3200);
+      return res.dossier;
+    });
+  }, [todayKey]);
+
+  const handleEraseAllData = useCallback(async () => {
+    const oldKey = dossierRef.current.pilotKey;
+    try {
+      const base = getServerUrl() ?? '';
+      await fetch(`${base}/api/pilot/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ pilotKey: oldKey }),
+      });
+    } catch {
+      // Offline / standalone mode — local data still erased cleanly.
+    }
+    const fresh = eraseLocalDossier();
+    setDossier(fresh);
+    setPlayerName('');
+    setMutedNames([]);
+  }, []);
+
+  const toggleTheme = useCallback(() => {
+    sound('click');
+    updateDossier({ colorMode: dossier.colorMode === 'light' ? 'dark' : 'light' });
+  }, [dossier.colorMode, sound, updateDossier]);
+
+  const refreshAuthAndLobby = useCallback(async () => {
+    if (REQUIRES_HOST_ADDRESS && !getServerUrl()) return;
+    try {
+      const base = getServerUrl() ?? '';
+      const authResp = await fetch(`${base}/api/auth/status`, { credentials: 'include' });
+      if (authResp.ok) {
+        const st = (await authResp.json()) as AuthStatusResponse;
+        setAuthStatus(st);
+        if (st.user?.name) {
+          setPlayerName(curr => curr || st.user!.name);
+        }
+        if (!st.locked || st.authenticated) {
+          const lobResp = await fetch(`${base}/api/lobby`, { credentials: 'include' });
+          if (lobResp.ok) {
+            setLobbySnapshot((await lobResp.json()) as LobbySnapshot);
+          }
+        }
+      }
+    } catch {
+      // Offline / standalone mode — handled gracefully.
+    }
+  }, []);
+
+  useEffect(() => {
+    const loaded = loadDossier();
+    const storedHost = window.localStorage.getItem(HOST_STORAGE_KEY);
+    const params = new URLSearchParams(window.location.search);
+    const urlRoom = params.get('room')?.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
     const table = loadLastTable();
+
     Promise.resolve().then(() => {
-      if (stored) setServerUrl(stored);
-      if (table) {
+      setDossier(loaded);
+      if (loaded.callsign) setPlayerName(loaded.callsign);
+      if (storedHost) setServerUrl(storedHost);
+      if (urlRoom && urlRoom.length >= 4) {
+        setRoomId(urlRoom);
+        if (table && table.roomId === urlRoom) {
+          setPlayerName(table.playerName);
+          setIsSpectator(table.isSpectator);
+          setIsJoined(true);
+        }
+      } else if (table) {
         setPlayerName(table.playerName);
         setRoomId(table.roomId);
         setIsSpectator(table.isSpectator);
         setIsJoined(true);
       }
+      refreshAuthAndLobby();
     });
-  }, []);
+  }, [refreshAuthAndLobby]);
 
-  // Web Audio Context for synthesized sounds
-  const audioCtxRef = useRef<AudioContext | null>(null);
-
-  const initAudio = () => {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-    }
-    if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume();
-    }
-  };
-
-  const volumeRef = useRef(volume);
   useEffect(() => {
-    volumeRef.current = volume;
-  }, [volume]);
+    if (isJoined) return;
+    if (authStatus.locked && !authStatus.authenticated) return;
+    if (REQUIRES_HOST_ADDRESS && !serverUrl.trim()) return;
 
-  // An AudioContext can only start from a user gesture, and rejoining after a
-  // refresh never touches the join button. Arm on the first interaction of any
-  // kind so a reconnected player is not left with silence.
+    const watcher = io(getServerUrl(), { withCredentials: true });
+    watcher.on('lobbyUpdate', (snap: LobbySnapshot) => {
+      setLobbySnapshot(snap);
+    });
+    return () => {
+      watcher.disconnect();
+    };
+  }, [isJoined, authStatus.locked, authStatus.authenticated, serverUrl]);
+
   useEffect(() => {
-    const arm = () => initAudio();
-    const options = { once: true, passive: true } as const;
-    window.addEventListener('pointerdown', arm, options);
-    window.addEventListener('keydown', arm, options);
+    const arm = () => armAudio();
+    const opts = { once: true, passive: true } as const;
+    window.addEventListener('pointerdown', arm, opts);
+    window.addEventListener('keydown', arm, opts);
     return () => {
       window.removeEventListener('pointerdown', arm);
       window.removeEventListener('keydown', arm);
     };
   }, []);
 
-  // Sound effects synthesizer
-  const playSound = React.useCallback((type: 'card' | 'chips' | 'dice' | 'win' | 'fold' | 'click' | 'check' | 'sabacc_shift' | 'no_shift' | 'turn' | 'lose' | 'join' | 'error') => {
-    if (!audioCtxRef.current) return;
-    
-    const ctx = audioCtxRef.current;
-    if (ctx.state === 'suspended') ctx.resume();
-    
-    const now = ctx.currentTime;
-    const masterGain = ctx.createGain();
-    masterGain.gain.setValueAtTime(volumeRef.current * 0.5, now); // Global volume adjustment
-    masterGain.connect(ctx.destination);
-
-    switch (type) {
-      case 'click': {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(1000, now);
-        gain.gain.setValueAtTime(0.1, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
-        osc.connect(gain);
-        gain.connect(masterGain);
-        osc.start();
-        osc.stop(now + 0.05);
-        break;
-      }
-      case 'check': {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(200, now);
-        gain.gain.setValueAtTime(0.2, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
-        osc.connect(gain);
-        gain.connect(masterGain);
-        osc.start();
-        osc.stop(now + 0.1);
-        break;
-      }
-      case 'card': {
-        // "Swish" sound using noise and filter
-        const bufferSize = ctx.sampleRate * 0.1;
-        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-        const data = buffer.getChannelData(0);
-        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
-
-        const noise = ctx.createBufferSource();
-        noise.buffer = buffer;
-
-        const filter = ctx.createBiquadFilter();
-        filter.type = 'bandpass';
-        filter.frequency.setValueAtTime(2000, now);
-        filter.frequency.exponentialRampToValueAtTime(800, now + 0.1);
-        filter.Q.setValueAtTime(1, now);
-
-        const gain = ctx.createGain();
-        gain.gain.setValueAtTime(0.15, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
-
-        noise.connect(filter);
-        filter.connect(gain);
-        gain.connect(masterGain);
-        noise.start();
-        break;
-      }
-      case 'chips': {
-        // Metallic "clink" - two sine waves with different frequencies
-        const osc1 = ctx.createOscillator();
-        const osc2 = ctx.createOscillator();
-        const gain = ctx.createGain();
-        
-        osc1.type = 'sine';
-        osc1.frequency.setValueAtTime(2800, now);
-        osc2.type = 'sine';
-        osc2.frequency.setValueAtTime(3400, now);
-        
-        gain.gain.setValueAtTime(0.2, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
-        
-        osc1.connect(gain);
-        osc2.connect(gain);
-        gain.connect(masterGain);
-        
-        osc1.start();
-        osc2.start();
-        osc1.stop(now + 0.08);
-        osc2.stop(now + 0.08);
-        break;
-      }
-      case 'dice': {
-        // Multiple short thumps with a bit of high freq content
-        for (let i = 0; i < 3; i++) {
-          const t = now + i * 0.08;
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = 'triangle';
-          osc.frequency.setValueAtTime(150, t);
-          osc.frequency.exponentialRampToValueAtTime(60, t + 0.06);
-          gain.gain.setValueAtTime(0.25, t);
-          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
-          osc.connect(gain);
-          gain.connect(masterGain);
-          osc.start(t);
-          osc.stop(t + 0.06);
-        }
-        break;
-      }
-      case 'win': {
-        // Bright success chime
-        const freqs = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
-        freqs.forEach((f, i) => {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(f, now + i * 0.08);
-          gain.gain.setValueAtTime(0, now + i * 0.08);
-          gain.gain.linearRampToValueAtTime(0.2, now + i * 0.08 + 0.02);
-          gain.gain.exponentialRampToValueAtTime(0.01, now + i * 0.08 + 0.2);
-          osc.connect(gain);
-          gain.connect(masterGain);
-          osc.start(now + i * 0.08);
-          osc.stop(now + i * 0.08 + 0.2);
-        });
-        break;
-      }
-      case 'fold': {
-        // Low frequency "thud"
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(80, now);
-        osc.frequency.exponentialRampToValueAtTime(20, now + 0.2);
-        gain.gain.setValueAtTime(0.4, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
-        osc.connect(gain);
-        gain.connect(masterGain);
-        osc.start();
-        osc.stop(now + 0.2);
-        break;
-      }
-      case 'sabacc_shift': {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(200, now);
-        osc.frequency.exponentialRampToValueAtTime(50, now + 1);
-        gain.gain.setValueAtTime(0.5, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + 1);
-        osc.connect(gain);
-        gain.connect(masterGain);
-        osc.start();
-        osc.stop(now + 1);
-        break;
-      }
-      case 'no_shift': {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(400, now);
-        gain.gain.setValueAtTime(0.1, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
-        osc.connect(gain);
-        gain.connect(masterGain);
-        osc.start();
-        osc.stop(now + 0.1);
-        break;
-      }
-      case 'turn': {
-        // Rising two-note prompt. This is the cue you need if the tab is in the
-        // background or the phone is in a pocket, so it carries further than a
-        // click without being alarming.
-        [659.25, 987.77].forEach((f, i) => {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = 'triangle';
-          osc.frequency.setValueAtTime(f, now + i * 0.11);
-          gain.gain.setValueAtTime(0, now + i * 0.11);
-          gain.gain.linearRampToValueAtTime(0.22, now + i * 0.11 + 0.02);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.11 + 0.3);
-          osc.connect(gain);
-          gain.connect(masterGain);
-          osc.start(now + i * 0.11);
-          osc.stop(now + i * 0.11 + 0.3);
-        });
-        break;
-      }
-      case 'lose': {
-        // Falling minor third, the mirror of the win chime.
-        [392.0, 311.13].forEach((f, i) => {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(f, now + i * 0.16);
-          gain.gain.setValueAtTime(0, now + i * 0.16);
-          gain.gain.linearRampToValueAtTime(0.16, now + i * 0.16 + 0.03);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.16 + 0.45);
-          osc.connect(gain);
-          gain.connect(masterGain);
-          osc.start(now + i * 0.16);
-          osc.stop(now + i * 0.16 + 0.45);
-        });
-        break;
-      }
-      case 'join': {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(520, now);
-        osc.frequency.exponentialRampToValueAtTime(780, now + 0.12);
-        gain.gain.setValueAtTime(0.12, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
-        osc.connect(gain);
-        gain.connect(masterGain);
-        osc.start();
-        osc.stop(now + 0.15);
-        break;
-      }
-      case 'error': {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(160, now);
-        osc.frequency.setValueAtTime(120, now + 0.09);
-        gain.gain.setValueAtTime(0.1, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
-        osc.connect(gain);
-        gain.connect(masterGain);
-        osc.start();
-        osc.stop(now + 0.2);
-        break;
-      }
-    }
-  }, []);
-
-  const leaveRoom = () => {
-    // Deliberately leaving must not be undone by the refresh-rejoin path.
-    clearLastTable();
-    setMyPlayerId(null);
-    socket?.disconnect();
-    setGameState(null);
-    setSocket(null);
-    setIsJoined(false);
-  };
-  const logsEndRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!gameState?.turnExpires) return;
+    const id = setInterval(() => setNowTick(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [gameState?.turnExpires]);
 
   const playerNameRef = useRef(playerName);
   const roomIdRef = useRef(roomId);
-  // The socket handlers are registered once, so they read identity and the
-  // previous state through refs rather than stale closure values.
-  const myPlayerIdRef = useRef<string | null>(null);
-  const prevStateRef = useRef<GameState | null>(null);
-
-  useEffect(() => {
-    myPlayerIdRef.current = myPlayerId;
-  }, [myPlayerId]);
-
   const isSpectatorRef = useRef(isSpectator);
+  const myPlayerIdRef = useRef<string | null>(null);
+  const prevStateRef = useRef<ClientGameState | null>(null);
+  const socketRef = useRef<GameTransport | null>(null);
 
   useEffect(() => {
     playerNameRef.current = playerName;
@@ -451,595 +385,779 @@ export default function SabaccGame() {
     isSpectatorRef.current = isSpectator;
   }, [playerName, roomId, isSpectator]);
 
-  const socketRef = useRef<Socket | null>(null);
+  useEffect(() => {
+    myPlayerIdRef.current = myPlayerId;
+  }, [myPlayerId]);
 
   useEffect(() => {
     if (!isJoined) {
       if (socketRef.current) {
         socketRef.current.disconnect();
         socketRef.current = null;
-        // Avoid synchronous setState in effect
         Promise.resolve().then(() => setSocket(null));
       }
       return;
     }
-
     if (socketRef.current) return;
 
-    const newSocket = io(getServerUrl());
-    socketRef.current = newSocket;
+    const transport: GameTransport = localSoloSpecRef.current
+      ? new LocalGameTransport(localSoloSpecRef.current)
+      : io(getServerUrl(), { withCredentials: true });
 
-    newSocket.on('connect', () => {
-      setSocket(newSocket);
-      // Re-join on every connect, including automatic reconnects. The stored
-      // token is what reclaims the seat; without it the server issues a new one.
-      newSocket.emit('joinRoom', {
+    socketRef.current = transport;
+    const localMode = !!localSoloSpecRef.current;
+    Promise.resolve().then(() => setIsLocalSolo(localMode));
+
+    transport.on('connect', () => {
+      setSocket(transport);
+      transport.emit('joinRoom', {
         roomId: roomIdRef.current,
         playerName: playerNameRef.current,
         isSpectator: isSpectatorRef.current,
-        token: loadSession(roomIdRef.current)?.token
+        token: loadSession(roomIdRef.current)?.token,
+        pilotKey: dossierRef.current.pilotKey,
+        vaultCredits: dossierRef.current.vaultCredits,
       });
     });
 
-    // The server owns identity. It tells us our token and our player id.
-    newSocket.on('session', (session: StoredSession) => {
+    transport.on('session', (session: StoredSession) => {
       saveSession(session);
       myPlayerIdRef.current = session.playerId;
       saveLastTable({
         roomId: session.roomId,
         playerName: playerNameRef.current,
-        isSpectator: isSpectatorRef.current
+        isSpectator: isSpectatorRef.current,
       });
       setMyPlayerId(session.playerId);
     });
 
-    newSocket.on('gameStateUpdate', (state: GameState) => {
-      // Sound effects are deliberately outside the state updater: React runs
-      // updaters twice under Strict Mode, which fired every cue twice.
+    transport.on('lobbyUpdate', (snap: LobbySnapshot) => {
+      setLobbySnapshot(snap);
+    });
+
+    transport.on('gameStateUpdate', (state: ClientGameState) => {
       const prev = prevStateRef.current;
       prevStateRef.current = state;
       setGameState(state);
-      if (!prev) return;
 
       const myId = myPlayerIdRef.current;
 
-      if (state.currentPhase !== prev.currentPhase) {
-        if (state.currentPhase === 'DICE') {
-          playSound('dice');
-          setIsRollingDice(true);
-          setTimeout(() => {
-            setIsRollingDice(false);
-            if (state.lastDiceRoll) {
-              playSound(state.lastDiceRoll[0] === state.lastDiceRoll[1] ? 'sabacc_shift' : 'no_shift');
+      if (state.currentPhase === 'SHOWDOWN' && state.showdownResult) {
+        const meNow = state.players.find(p => p.id === myId);
+        setDossier(curr => {
+          const prevCodexCount = Object.keys(curr.codex).length;
+          const settlement = settleShowdownToDossier(curr, state, myId, todayKey, () =>
+            state.daily && meNow ? formatKesselShareCard(state.daily, meNow.credits) : ''
+          );
+          if (settlement.changed) {
+            const updated = settlement.dossier;
+            saveDossier(updated);
+            if (settlement.rankedUpTo) {
+              setTimeout(() => playCue('rank_up', volumeRef.current), 380);
+              setMilestoneBanner(`RANK UP // ${settlement.rankedUpTo.toUpperCase()}`);
+              setTimeout(() => setMilestoneBanner(null), 3600);
+            } else if (settlement.sweepCleared) {
+              setTimeout(() => playCue('sabacc_pot', volumeRef.current), 360);
+              setMilestoneBanner('DAILY SWEEP // +400 CR BONUS');
+              setTimeout(() => setMilestoneBanner(null), 3600);
+            } else if (settlement.bountiesCleared.length > 0) {
+              setTimeout(() => playCue('bounty', volumeRef.current), 360);
+              setMilestoneBanner(`BOUNTY COMPLETE // ${settlement.bountiesCleared[0].toUpperCase()}`);
+              setTimeout(() => setMilestoneBanner(null), 3400);
+            } else if (Object.keys(updated.codex).length > prevCodexCount) {
+              const myStanding = state.showdownResult?.standings.find(s => s.playerId === myId);
+              const meta = HAND_CODEX_META.find(m => m.key === myStanding?.evaluation.rankKey);
+              if (meta) {
+                setMilestoneBanner(`NEW HAND DISCOVERED // ${meta.name.toUpperCase()}`);
+                setTimeout(() => setMilestoneBanner(null), 3200);
+              }
+            } else if (settlement.bailoutGranted) {
+              setMilestoneBanner('CANTINA BAILOUT // RESTORED TO 300 CR');
+              setTimeout(() => setMilestoneBanner(null), 3200);
+            } else if (updated.currentStreak >= 3 && updated.currentStreak > curr.currentStreak) {
+              setMilestoneBanner(`WIN STREAK // ${updated.currentStreak}× IN A ROW`);
+              setTimeout(() => setMilestoneBanner(null), 2800);
             }
-          }, 2000);
+            return updated;
+          }
+          return curr;
+        });
+      }
+
+      if (!prev) return;
+
+      if (
+        state.messages.length > prev.messages.length &&
+        !showDrawerRef.current &&
+        dossierRef.current.chatEnabled
+      ) {
+        setUnreadChat(true);
+      }
+
+      if (
+        state.gamesPlayed !== prev.gamesPlayed ||
+        (prev.currentPhase === 'JOINING' && state.currentPhase === 'CARD')
+      ) {
+        sound('deal');
+        setSelectedCardId(null);
+        setPendingSwapMode(null);
+        setBetAmount(String(state.settings.ante));
+      }
+
+      if (state.currentPhase !== prev.currentPhase) {
+        setPendingSwapMode(null);
+        setSelectedCardId(null);
+        if (state.currentPhase === 'DICE') {
+          sound('dice');
+          setTumbleFirst(true);
+          setTumbleSecond(true);
+          setTimeout(() => setTumbleFirst(false), 850);
+          setTimeout(() => {
+            setTumbleSecond(false);
+            if (state.lastDiceRoll && state.lastDiceRoll[0] !== state.lastDiceRoll[1]) {
+              sound('no_shift');
+            }
+          }, 1200);
         }
-        // Winning and losing should not sound the same.
+
         if (state.currentPhase === 'SHOWDOWN') {
-          const iWon = !!myId && state.winnerId === myId;
+          const iWon = !!myId && state.winnerIds.includes(myId);
+          const wonSabaccPot = state.showdownResult?.payouts.some(
+            p => p.label === 'Sabacc Pot' && !!myId && p.winnerIds.includes(myId)
+          );
           const iPlayed = state.players.some(p => p.id === myId && !p.isSpectator);
-          playSound(iWon ? 'win' : iPlayed ? 'lose' : 'no_shift');
+          sound('flip');
+          if (iWon) triggerHaptic(wonSabaccPot ? [30, 30, 60] : 25, hapticsRef.current);
+          setTimeout(() => {
+            sound(wonSabaccPot ? 'sabacc_pot' : iWon ? 'win' : iPlayed ? 'lose' : 'no_shift');
+          }, 150);
         }
       }
 
-      // Your turn is the one cue you cannot afford to miss on a phone.
+      if (state.shiftTriggered && !prev.shiftTriggered) {
+        sound('sabacc_shift');
+        triggerHaptic([40, 25, 65], hapticsRef.current);
+        setShiftShock(true);
+        setTimeout(() => setShiftShock(false), 600);
+      }
+
       const wasMyTurn = prev.players[prev.turnIndex]?.id === myId;
       const isMyTurn = state.players[state.turnIndex]?.id === myId;
-      const actionablePhase = state.currentPhase === 'CARD' || state.currentPhase === 'BETTING';
-      if (isMyTurn && !wasMyTurn && actionablePhase && myId) playSound('turn');
+      const actionable = state.currentPhase === 'CARD' || state.currentPhase === 'BETTING';
+      if (isMyTurn && !wasMyTurn && actionable && myId) {
+        sound('turn');
+        setBetAmount(String(Math.max(state.minRaise, state.settings.ante)));
+      }
 
-      if (state.players.length > prev.players.length) playSound('join');
+      if (state.players.length > prev.players.length) sound('join');
 
       if (state.logs.length > prev.logs.length) {
         const lastLog = state.logs[state.logs.length - 1];
-        if (lastLog.includes('drew') || lastLog.includes('swapped')) playSound('card');
-        if (lastLog.includes('bet') || lastLog.includes('raised') || lastLog.includes('called')) playSound('chips');
-        if (lastLog.includes('folded')) playSound('fold');
+        if (lastLog.includes('drew') || lastLog.includes('swapped') || lastLog.includes('took')) sound('card');
+        else if (
+          lastLog.includes('bet') ||
+          lastLog.includes('raised') ||
+          lastLog.includes('called') ||
+          lastLog.includes('committed')
+        )
+          sound('chips');
+        else if (lastLog.includes('checked')) sound('check');
+        else if (lastLog.includes('folded')) sound('fold');
       }
     });
 
-    newSocket.on('error', (msg: string) => {
-      playSound('error');
+    transport.on('error', (msg: string) => {
+      sound('error');
       setErrorMessage(msg);
-      setTimeout(() => setErrorMessage(null), 5000);
+      setTimeout(() => setErrorMessage(null), 4000);
     });
 
-    // The room is gone or unusable, so drop back to the join screen instead of
-    // sitting on the connecting spinner forever.
-    newSocket.on('joinRejected', ({ reason }: { reason: string }) => {
+    transport.on('joinRejected', ({ reason }: { reason: string }) => {
       clearLastTable();
+      localSoloSpecRef.current = null;
       setErrorMessage(reason);
-      setTimeout(() => setErrorMessage(null), 6000);
+      setTimeout(() => setErrorMessage(null), 5500);
       setGameState(null);
       setMyPlayerId(null);
       setIsJoined(false);
     });
 
-    newSocket.on('connect_error', () => {
-      setErrorMessage("Connection error. Retrying...");
-      setTimeout(() => setErrorMessage(null), 5000);
+    transport.on('connect_error', (err: Error) => {
+      if (err?.message === 'AUTH_REQUIRED') {
+        clearLastTable();
+        setIsJoined(false);
+        refreshAuthAndLobby();
+        return;
+      }
+      setErrorMessage('Reconnecting...');
+      setTimeout(() => setErrorMessage(null), 4000);
     });
 
     return () => {
-      newSocket.disconnect();
+      transport.disconnect();
       socketRef.current = null;
     };
-  }, [isJoined, playSound]); // Only depend on isJoined and playSound (which is stable)
+  }, [isJoined, sound, refreshAuthAndLobby, todayKey]);
 
-  useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [gameState?.logs]);
+  const leaveRoom = useCallback(() => {
+    clearLastTable();
+    localSoloSpecRef.current = null;
+    setCantinaAmbience(false);
+    if (typeof window !== 'undefined' && window.location.search.includes('room=')) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+    setShowDrawer(false);
+    setSeatMenuPlayerId(null);
+    setMyPlayerId(null);
+    prevStateRef.current = null;
+    socket?.disconnect();
+    setGameState(null);
+    setSocket(null);
+    setIsJoined(false);
+    refreshAuthAndLobby();
+  }, [socket, refreshAuthAndLobby]);
 
-  const joinRoom = () => {
-    if (!playerName || !roomId) return;
-    // The connect handler does the actual joinRoom emit, so it carries the
-    // stored token on both first join and reconnect.
+  const startLocalOfflineSolo = useCallback(
+    (mode: GameMode, stakesTier?: StakesTier) => {
+      localSoloSpecRef.current = { mode, stakesTier, dailyDateKey: todayKey };
+      setRoomId('LOCAL');
+      roomIdRef.current = 'LOCAL';
+      setIsJoined(true);
+    },
+    [todayKey]
+  );
+
+  const createAndEnterRoom = useCallback(
+    (mode: GameMode, stakesTier?: StakesTier, isPublic = true) => {
+      const cleanName = playerName.trim();
+      if (!cleanName) return;
+      armAudio();
+      sound('chips');
+      updateDossier({ callsign: cleanName });
+
+      if (mode !== 'party') setIsSpectator(false);
+
+      if (mode !== 'party' && ((REQUIRES_HOST_ADDRESS && !serverUrl.trim()) || !navigator.onLine)) {
+        startLocalOfflineSolo(mode, stakesTier);
+        return;
+      }
+
+      localSoloSpecRef.current = null;
+      const lobby = io(getServerUrl(), { withCredentials: true, timeout: 2500 });
+      lobby.on('roomCreated', ({ roomId: code }: { roomId: string }) => {
+        lobby.close();
+        setRoomId(code);
+        roomIdRef.current = code;
+        setIsJoined(true);
+      });
+      lobby.on('joinRejected', ({ reason }: { reason: string }) => {
+        lobby.close();
+        setErrorMessage(reason);
+        setTimeout(() => setErrorMessage(null), 5000);
+      });
+      lobby.on('connect_error', (err: Error) => {
+        lobby.close();
+        if (err?.message === 'AUTH_REQUIRED') {
+          refreshAuthAndLobby();
+          return;
+        }
+        if (mode !== 'party') {
+          startLocalOfflineSolo(mode, stakesTier);
+          return;
+        }
+        setErrorMessage('Could not reach the multiplayer server.');
+        setTimeout(() => setErrorMessage(null), 5000);
+      });
+      lobby.emit('createRoom', { mode, stakesTier, dailyDateKey: todayKey, isPublic });
+    },
+    [playerName, serverUrl, sound, todayKey, updateDossier, startLocalOfflineSolo, refreshAuthAndLobby]
+  );
+
+  const startFreshFromInside = useCallback(
+    (mode: GameMode) => {
+      leaveRoom();
+      setTimeout(() => createAndEnterRoom(mode), 60);
+    },
+    [leaveRoom, createAndEnterRoom]
+  );
+
+  const handleJoinExisting = (explicitCode?: string) => {
+    const cleanName = playerName.trim();
+    const code = (explicitCode ?? roomId).trim().toUpperCase();
+    if (!cleanName || code.length < 4) return;
+    armAudio();
+    sound('chips');
+    localSoloSpecRef.current = null;
+    if (explicitCode) {
+      setRoomId(code);
+      roomIdRef.current = code;
+    }
+    updateDossier({ callsign: cleanName });
     setIsJoined(true);
   };
 
-  // Rooms are created by the server so the code is unambiguous and unused.
-  const createRoom = () => {
-    if (!playerName) return;
-    const lobby = io(getServerUrl());
-    lobby.on('roomCreated', ({ roomId: code }: { roomId: string }) => {
-      lobby.close();
-      setRoomId(code);
-      roomIdRef.current = code;
-      setIsJoined(true);
-    });
-    lobby.on('connect_error', () => {
-      lobby.close();
-      setErrorMessage('Could not reach the server.');
-      setTimeout(() => setErrorMessage(null), 5000);
-    });
-    lobby.emit('createRoom');
-  };
-
-  const handleUpdateCredits = () => {
-    if (socket && newCreditsAmount >= 0) {
-      socket.emit('updateCredits', { credits: newCreditsAmount });
-    }
-    setIsEditingCredits(false);
-  };
-
-  const setReady = () => {
-    socket?.emit('ready', {});
-  };
-
-  const toggleSpectator = () => {
-    socket?.emit('toggleSpectator', {});
-  };
-
-  const addAI = () => {
-    socket?.emit('addAI', {});
-  };
-
-  const handleJoinGame = () => {
-    playSound('click');
-    if ((me?.credits || 0) < 15) {
-      setShowBuyIn(true);
-    } else {
-      toggleSpectator();
-    }
-  };
-
-  const removeAI = (aiId: string) => {
-    socket?.emit('removeAI', { aiId });
-  };
-
-  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
-  const [displayedPlayers, setDisplayedPlayers] = useState<Player[]>([]);
-
+  // Desktop keyboard shortcuts (invisible on mobile so touch UI stays ultra-clean)
   useEffect(() => {
-    if (gameState?.players && !isRollingDice) {
-      const players = gameState.players;
-      Promise.resolve().then(() => setDisplayedPlayers(players));
-    }
-  }, [gameState?.players, isRollingDice]);
+    if (!isJoined || !gameState || !socket) return;
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (
+        showDrawer ||
+        showTutorial ||
+        showDossier ||
+        showLegal ||
+        showAdmin ||
+        showLedger ||
+        showQrInvite ||
+        showBuyIn ||
+        showAllInConfirm
+      ) {
+        return;
+      }
 
-  const cardAction = (action: 'draw' | 'swap_deck' | 'swap_discard' | 'stand', cardId?: string) => {
-    socket?.emit('cardAction', { action, cardId });
-    setSelectedCardId(null);
-  };
+      const me = gameState.players.find(p => p.id === myPlayerId);
+      const isMyTurn = gameState.players[gameState.turnIndex]?.id === myPlayerId;
+      const topDiscard = gameState.discardPile[gameState.discardPile.length - 1];
 
-  const betAction = (action: 'call' | 'raise' | 'fold' | 'check' | 'bet' | 'all_in', amount?: string) => {
-    socket?.emit('betAction', { action, amount });
-  };
+      if (gameState.currentPhase === 'SHOWDOWN' && (e.code === 'Space' || e.key === 'Enter')) {
+        e.preventDefault();
+        if (gameState.tour?.stageCleared && !gameState.tour.tourCompleted) {
+          sound('sabacc_pot');
+          socket.emit('advanceTourStage', {});
+        } else if (!gameState.tour?.runFailed && !gameState.daily?.finished && !me?.isReady) {
+          sound('click');
+          socket.emit('ready', {});
+        }
+        return;
+      }
 
-  const sendChatMessage = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!chatMessage.trim()) return;
-    socket?.emit('chatMessage', { text: chatMessage });
-    setChatMessage('');
-  };
+      if (!isMyTurn || !me) return;
 
-  const getOpponentStyle = (index: number, total: number) => {
-    let angle = Math.PI / 2;
-    if (total > 1) {
-      const startAngle = Math.PI * 0.95;
-      const endAngle = Math.PI * 0.05;
-      angle = startAngle - (index * ((startAngle - endAngle) / (total - 1)));
-    }
-    // Seats are centred on their coordinate, so a wide arc pushed the outermost
-    // cards past the edge of a phone screen. Tighten the arc and keep every
-    // centre far enough inside that half a card still fits.
-    const rx = 40;
-    const ry = 40;
-    // Seats are centred on their coordinate, so keep every centre far enough
-    // inside that half a card still fits at the narrowest supported width.
-    const edgeMargin = 15;
-    const x = Math.min(100 - edgeMargin, Math.max(edgeMargin, 50 + rx * Math.cos(angle)));
-    const y = 50 - ry * Math.sin(angle);
-    return {
-      left: `${x}%`,
-      top: `${y}%`,
-      transform: 'translate(-50%, -50%)',
-      position: 'absolute' as const,
-      zIndex: 10,
+      if (gameState.currentPhase === 'CARD') {
+        const num = Number(e.key);
+        if (num >= 1 && num <= me.hand.length) {
+          const target = me.hand[num - 1];
+          if (pendingSwapMode) {
+            sound('card');
+            socket.emit('cardAction', { action: pendingSwapMode, cardId: target.id });
+            setPendingSwapMode(null);
+            setSelectedCardId(null);
+          } else {
+            sound('click');
+            setSelectedCardId(curr => (curr === target.id ? null : target.id));
+          }
+          return;
+        }
+        if (e.key === 'Escape') {
+          setSelectedCardId(null);
+          setPendingSwapMode(null);
+          return;
+        }
+        if (e.key.toLowerCase() === 'd') {
+          e.preventDefault();
+          sound('card');
+          socket.emit('cardAction', { action: 'draw' });
+          setSelectedCardId(null);
+          setPendingSwapMode(null);
+          return;
+        }
+        if (e.key.toLowerCase() === 'w') {
+          e.preventDefault();
+          if (selectedCardId) {
+            sound('card');
+            socket.emit('cardAction', { action: 'swap_deck', cardId: selectedCardId });
+            setSelectedCardId(null);
+            setPendingSwapMode(null);
+          } else {
+            sound('click');
+            setPendingSwapMode(curr => (curr === 'swap_deck' ? null : 'swap_deck'));
+          }
+          return;
+        }
+        if (e.key.toLowerCase() === 't' && topDiscard) {
+          e.preventDefault();
+          if (selectedCardId) {
+            sound('card');
+            socket.emit('cardAction', { action: 'swap_discard', cardId: selectedCardId });
+            setSelectedCardId(null);
+            setPendingSwapMode(null);
+          } else {
+            sound('click');
+            setPendingSwapMode(curr => (curr === 'swap_discard' ? null : 'swap_discard'));
+          }
+          return;
+        }
+        if (e.key.toLowerCase() === 's' || e.code === 'Space') {
+          e.preventDefault();
+          sound('click');
+          socket.emit('cardAction', { action: 'stand' });
+          setSelectedCardId(null);
+          setPendingSwapMode(null);
+        }
+      } else if (gameState.currentPhase === 'BETTING') {
+        if (e.code === 'Space' || e.key.toLowerCase() === 'c') {
+          e.preventDefault();
+          if (gameState.currentBet > me.betThisRound) {
+            sound('chips');
+            socket.emit('betAction', { action: 'call' });
+          } else {
+            sound('check');
+            socket.emit('betAction', { action: 'check' });
+          }
+          return;
+        }
+        if (e.key.toLowerCase() === 'r') {
+          e.preventDefault();
+          sound('chips');
+          socket.emit('betAction', {
+            action: gameState.currentBet === 0 ? 'bet' : 'raise',
+            amount: betAmount,
+          });
+          return;
+        }
+        if (e.key.toLowerCase() === 'f') {
+          e.preventDefault();
+          sound('fold');
+          socket.emit('betAction', { action: 'fold' });
+        }
+      }
     };
-  };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [
+    isJoined,
+    gameState,
+    socket,
+    myPlayerId,
+    selectedCardId,
+    pendingSwapMode,
+    betAmount,
+    sound,
+    showDrawer,
+    showTutorial,
+    showDossier,
+    showLegal,
+    showAdmin,
+    showLedger,
+    showQrInvite,
+    showBuyIn,
+    showAllInConfirm,
+  ]);
+
+  const isLight = dossier.colorMode === 'light';
+
+  if (authStatus.locked && !authStatus.authenticated) {
+    return (
+      <AuthGate
+        passwordEnabled={authStatus.passwordEnabled}
+        oidcEnabled={authStatus.oidcEnabled}
+        oidcProviderName={authStatus.oidcProviderName}
+        colorMode={dossier.colorMode}
+        onToggleTheme={toggleTheme}
+        onAuthenticated={callsign => {
+          if (callsign) {
+            setPlayerName(callsign);
+            updateDossier({ callsign });
+          }
+          refreshAuthAndLobby();
+        }}
+      />
+    );
+  }
 
   if (!isJoined) {
     return (
-      <div className="min-h-[100dvh] bg-[#0a0a0a] text-white flex items-center justify-center p-4 font-sans">
-        <div className="max-w-md w-full bg-[#1a1a1a] border border-amber-500/30 rounded-2xl p-8 shadow-[0_0_50px_rgba(245,158,11,0.1)]">
-          <h1 className="text-4xl font-bold text-center mb-8 tracking-tighter text-amber-500 uppercase italic">
-            Corellian Spike
-          </h1>
-          <div className="space-y-6">
-            <div>
-              <label className="block text-xs uppercase tracking-widest text-amber-500/60 mb-2">User Name</label>
-              <div className="relative">
-                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-amber-500/40" />
-                <input 
-                  type="text" 
-                  value={playerName}
-                  onChange={(e) => setPlayerName(e.target.value)}
-                  className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 text-base focus:outline-none focus:border-amber-500 transition-colors"
-                  placeholder="Han Solo"
-                />
-              </div>
-            </div>
-            {needsServerUrl && (
-              <div>
-                <label className="block text-xs uppercase tracking-widest text-amber-500/60 mb-2">Host Address</label>
-                <div className="relative">
-                  <Hash className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-amber-500/40" />
-                  <input
-                    type="url"
-                    inputMode="url"
-                    value={serverUrl}
-                    onChange={(e) => setServerUrl(e.target.value)}
-                    onBlur={() => {
-                      const trimmed = serverUrl.trim();
-                      if (trimmed) window.localStorage.setItem(HOST_STORAGE_KEY, trimmed);
-                    }}
-                    className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 text-base focus:outline-none focus:border-amber-500 transition-colors"
-                    placeholder="http://192.168.1.100:3000"
-                  />
-                </div>
-                <p className="mt-2 text-[10px] uppercase tracking-widest text-white/40">
-                  Address of the machine hosting the game
-                </p>
-              </div>
-            )}
-            <div>
-              <label className="block text-xs uppercase tracking-widest text-amber-500/60 mb-2">Sector ID (Room Code)</label>
-              <div className="relative">
-                <Hash className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-amber-500/40" />
-                <input
-                  type="text"
-                  value={roomId}
-                  onChange={(e) => setRoomId(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6))}
-                  className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 pl-10 pr-4 text-base focus:outline-none focus:border-amber-500 transition-colors tracking-[0.3em] font-mono"
-                  placeholder="XKQ7P"
-                  autoCapitalize="characters"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-              <p className="mt-2 text-[10px] uppercase tracking-widest text-white/40">
-                Have a code? Enter it. Otherwise start a new table below.
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <button 
-                onClick={() => {
-                  playSound('click');
-                  setIsSpectator(!isSpectator);
-                }}
-                className={`flex-1 flex items-center gap-3 p-3 rounded-xl border transition-all ${isSpectator ? 'bg-amber-500/20 border-amber-500/50' : 'bg-white/5 border-white/10'}`}
-              >
-                <div className={`w-4 h-4 rounded border flex items-center justify-center ${isSpectator ? 'bg-amber-500 border-amber-500' : 'border-white/20'}`}>
-                  {isSpectator && <Play className="w-3 h-3 text-black fill-current" />}
-                </div>
-                <span className="text-[10px] uppercase tracking-widest text-white/60 cursor-pointer select-none">
-                  Spectate
-                </span>
-              </button>
-            </div>
-            {errorMessage && (
-              <p className="text-xs text-red-400 text-center" role="alert">{errorMessage}</p>
-            )}
-            <button
-              onClick={() => {
-                initAudio();
-                playSound('chips');
-                joinRoom();
-              }}
-              disabled={!playerName.trim() || roomId.length < 4}
-              className="w-full bg-amber-500 hover:bg-amber-600 disabled:bg-white/10 disabled:text-white/30 text-black font-bold py-4 rounded-lg transition-all transform active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest"
-            >
-              Enter Cantina <ArrowRight className="w-5 h-5" />
-            </button>
-            <button
-              onClick={() => {
-                initAudio();
-                playSound('chips');
-                createRoom();
-              }}
-              disabled={!playerName.trim()}
-              className="w-full border border-amber-500/40 hover:border-amber-500 disabled:border-white/10 disabled:text-white/30 text-amber-500 font-bold py-3 rounded-lg transition-all transform active:scale-95 uppercase tracking-widest text-xs"
-            >
-              Start a New Table
-            </button>
-          </div>
-        </div>
+      <>
+        <LandingHub
+          playerName={playerName}
+          onPlayerNameChange={setPlayerName}
+          roomId={roomId}
+          onRoomIdChange={setRoomId}
+          isSpectator={isSpectator}
+          onToggleSpectator={() => {
+            sound('click');
+            setIsSpectator(v => !v);
+          }}
+          needsServerUrl={REQUIRES_HOST_ADDRESS}
+          serverUrl={serverUrl}
+          onServerUrlChange={setServerUrl}
+          onServerUrlBlur={() => {
+            const trimmed = serverUrl.trim();
+            if (trimmed) window.localStorage.setItem(HOST_STORAGE_KEY, trimmed);
+            refreshAuthAndLobby();
+          }}
+          errorMessage={errorMessage}
+          dossier={dossier}
+          todayKey={todayKey}
+          lobby={lobbySnapshot}
+          authInfo={{
+            oidcEnabled: authStatus.oidcEnabled,
+            oidcProviderName: authStatus.oidcProviderName,
+            user: authStatus.user,
+          }}
+          onToggleTheme={toggleTheme}
+          onClaimStipend={handleClaimStipend}
+          onOpenDossier={tab => {
+            sound('click');
+            if (tab) setDossierTab(tab);
+            setShowDossier(true);
+          }}
+          onOpenTutorial={() => {
+            sound('click');
+            setShowTutorial(true);
+          }}
+          onOpenRules={() => {
+            sound('click');
+            setIsRulesPinned(false);
+            setShowRules(true);
+          }}
+          onOpenLegal={() => {
+            sound('click');
+            setShowLegal(true);
+          }}
+          onOpenAdmin={() => {
+            sound('click');
+            setShowAdmin(true);
+          }}
+          onLogout={async () => {
+            await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+            refreshAuthAndLobby();
+          }}
+          onJoinRoom={handleJoinExisting}
+          onCreateRoom={createAndEnterRoom}
+        />
+        <TutorialModal
+          open={showTutorial}
+          lightMode={isLight}
+          onClose={() => setShowTutorial(false)}
+          onComplete={() => {
+            updateDossier({ tutorialCompleted: true });
+            setShowTutorial(false);
+          }}
+          onOpenFullRules={() => setShowRules(true)}
+          onPlaySound={cue => sound(cue)}
+        />
+        <RulesDrawer
+          open={showRules}
+          pinned={false}
+          onClose={() => setShowRules(false)}
+          onTogglePin={() => {}}
+          onOpenTutorial={() => setShowTutorial(true)}
+        />
+        <DossierModal
+          open={showDossier}
+          initialTab={dossierTab}
+          dossier={dossier}
+          todayKey={todayKey}
+          lobby={lobbySnapshot}
+          onClaimStipend={handleClaimStipend}
+          onOpenLegal={() => setShowLegal(true)}
+          onClose={() => setShowDossier(false)}
+          onUpdateDossier={updateDossier}
+        />
+        <LegalModal
+          open={showLegal}
+          onClose={() => setShowLegal(false)}
+          onEraseAllData={handleEraseAllData}
+        />
+        <AdminModal
+          open={showAdmin}
+          isAdmin={!!authStatus.user?.isAdmin}
+          canBootstrapAdmin={authStatus.canBootstrapAdmin}
+          onClose={() => setShowAdmin(false)}
+          onAdminUnlocked={refreshAuthAndLobby}
+        />
+      </>
+    );
+  }
+
+  if (!gameState) {
+    return (
+      <div className="holotable-stage flex min-h-[100dvh] flex-col items-center justify-center gap-3 font-mono text-cyan-300">
+        <div className="h-7 w-7 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
+        <span className="text-[11px] uppercase tracking-[0.3em]">DEALING TABLE...</span>
       </div>
     );
   }
 
-  if (!gameState) return <div className="min-h-[100dvh] bg-black flex items-center justify-center text-amber-500">Connecting to Holonet...</div>;
-
   const me = gameState.players.find(p => p.id === myPlayerId);
+  const isHost = !!myPlayerId && gameState.hostId === myPlayerId;
   const isMyTurn = gameState.players[gameState.turnIndex]?.id === myPlayerId;
   const isHandInPlay = gameState.currentPhase === 'CARD' || gameState.currentPhase === 'BETTING';
-  const myDisplayedPlayer = displayedPlayers.find(p => p.id === myPlayerId);
+  const reqAnte = gameState.settings.ante + gameState.settings.sabaccAnte;
+
+  const activeFeltId =
+    gameState.mode === 'cantina_tour' && gameState.tour
+      ? CANTINA_STAGES[gameState.tour.stageIndex]?.feltThemeId ?? dossier.selectedFelt
+      : dossier.selectedFelt;
+  const feltSpec = FELT_THEMES.find(f => f.id === activeFeltId) ?? FELT_THEMES[0];
+
+  const mySpendable = me ? spendableFor(me, gameState.settings) : 0;
+  const callDue = me ? Math.max(0, gameState.currentBet - me.betThisRound) : 0;
+  const maxRaiseAdd = Math.max(0, mySpendable - callDue);
+  const minRaiseAdd = Math.min(maxRaiseAdd, gameState.minRaise);
+  const cappedByLimit = !!me && mySpendable < me.credits;
+
+  const topDiscard =
+    gameState.discardPile.length > 0 ? gameState.discardPile[gameState.discardPile.length - 1] : null;
+  const myEval = me && me.hand.length > 0 ? evaluateHand(me.hand) : null;
+  const previewTargetCardId =
+    selectedCardId ?? (pendingSwapMode === 'swap_discard' ? hoveredCardId : null);
+  const swapDiscardPreview =
+    me && previewTargetCardId && topDiscard
+      ? previewSwap(me.hand, previewTargetCardId, topDiscard)
+      : null;
+
+  const opponents = gameState.players.filter(p => p.id !== myPlayerId);
+  const turnRemainingSec =
+    gameState.turnExpires && isHandInPlay
+      ? Math.max(0, Math.ceil((gameState.turnExpires - nowTick) / 1000))
+      : null;
+
+  const topDiscardLabel = topDiscard
+    ? topDiscard.value > 0
+      ? `+${topDiscard.value}`
+      : String(topDiscard.value)
+    : '';
 
   return (
-    // A definite height, not just a minimum: with only min-height the column
-    // grows to fit its children and flex-1 never has to shrink, which pushed
-    // the action buttons below the fold on shorter screens.
-    <div className="h-[100dvh] bg-[#050505] text-white font-sans overflow-hidden flex flex-col">
-      {/* Rules Modal */}
+    <div
+      className={`holotable-stage flex h-[100dvh] flex-col overflow-hidden font-sans text-slate-100 ${
+        shiftShock ? 'shift-shockwave' : ''
+      }`}
+    >
+      <CommandDrawer
+        open={showDrawer}
+        gameState={gameState}
+        dossier={dossier}
+        mutedNames={mutedNames}
+        isSpectator={!!me?.isSpectator}
+        isLocalSolo={isLocalSolo}
+        chatMessage={chatMessage}
+        onChatChange={setChatMessage}
+        onSendChat={e => {
+          e.preventDefault();
+          if (!chatMessage.trim()) return;
+          socket?.emit('chatMessage', { text: chatMessage });
+          setChatMessage('');
+        }}
+        onClose={() => setShowDrawer(false)}
+        onUpdateDossier={updateDossier}
+        onOpenQr={() => setShowQrInvite(true)}
+        onOpenLedger={() => setShowLedger(true)}
+        onOpenDossier={() => {
+          setDossierTab('vault');
+          setShowDossier(true);
+        }}
+        onOpenTutorial={() => setShowTutorial(true)}
+        onOpenRules={() => setShowRules(true)}
+        onOpenLegal={() => setShowLegal(true)}
+        onOpenAdmin={() => setShowAdmin(true)}
+        onToggleSpectator={() => socket?.emit('toggleSpectator', {})}
+        onLeaveRoom={leaveRoom}
+      />
+      <TutorialModal
+        open={showTutorial}
+        lightMode={isLight}
+        onClose={() => setShowTutorial(false)}
+        onComplete={() => {
+          updateDossier({ tutorialCompleted: true });
+          setShowTutorial(false);
+        }}
+        onOpenFullRules={() => setShowRules(true)}
+        onPlaySound={cue => sound(cue)}
+      />
+      <RulesDrawer
+        open={showRules}
+        pinned={isRulesPinned}
+        onClose={() => setShowRules(false)}
+        onTogglePin={() => setIsRulesPinned(v => !v)}
+        onOpenTutorial={() => setShowTutorial(true)}
+      />
+      <DossierModal
+        open={showDossier}
+        initialTab={dossierTab}
+        dossier={dossier}
+        todayKey={todayKey}
+        lobby={lobbySnapshot}
+        onClaimStipend={handleClaimStipend}
+        onOpenLegal={() => setShowLegal(true)}
+        onClose={() => setShowDossier(false)}
+        onUpdateDossier={updateDossier}
+      />
+      <LegalModal
+        open={showLegal}
+        onClose={() => setShowLegal(false)}
+        onEraseAllData={handleEraseAllData}
+      />
+      <AdminModal
+        open={showAdmin}
+        isAdmin={!!authStatus.user?.isAdmin}
+        canBootstrapAdmin={authStatus.canBootstrapAdmin}
+        onClose={() => setShowAdmin(false)}
+        onAdminUnlocked={refreshAuthAndLobby}
+      />
+      <QrInviteModal
+        open={showQrInvite}
+        roomId={gameState.roomId}
+        onClose={() => setShowQrInvite(false)}
+      />
+      <LedgerModal
+        open={showLedger}
+        gameState={gameState}
+        isHost={isHost}
+        onClose={() => setShowLedger(false)}
+        onUpdateSettings={(patch: {
+          stakesTier?: StakesTier;
+          tieRule?: TieRule;
+          turnSeconds?: number;
+          lockedCredits?: boolean;
+          isPublic?: boolean;
+        }) => socket?.emit('updateTableSettings', patch)}
+        onSkipTurn={() => socket?.emit('skipTurn', {})}
+        onResetTable={() => socket?.emit('resetTable', {})}
+      />
+
+      {/* All-In / Cap Confirm */}
       <AnimatePresence>
-        {showRules && !isRulesPinned && (
-          <motion.div 
+        {showAllInConfirm && me && (
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-sm"
+            className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
           >
-            <motion.div 
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              className="bg-zinc-900 border border-white/10 rounded-2xl max-w-2xl w-full max-h-[80vh] overflow-y-auto p-8 shadow-2xl relative"
-            >
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-bold text-amber-500 font-mono uppercase tracking-tighter">Corellian Spike Rules</h2>
-                <div className="flex items-center gap-4">
-                  <button 
-                    onClick={() => setIsRulesPinned(true)} 
-                    className="flex items-center gap-2 text-xs uppercase tracking-widest text-white/40 hover:text-amber-500 transition-colors"
-                    title="Pin to screen"
-                  >
-                    <Pin className="w-3 h-3" /> Pin
-                  </button>
-                  <button onClick={() => setShowRules(false)} className="text-white/40 hover:text-white transition-colors">
-                    <RotateCcw className="w-6 h-6" />
-                  </button>
-                </div>
-              </div>
-              
-              <div className="space-y-6 text-sm text-white/70 font-sans leading-relaxed">
-                <section>
-                  <h3 className="text-white font-bold mb-2 uppercase text-xs tracking-widest">The Objective</h3>
-                  <p>In Corellian Spike Sabacc, the goal is to have a hand with a total value as close to <span className="text-amber-500 font-bold">0</span> as possible. Positive totals beat negative totals in a tie (e.g., +1 beats -1). Special hands (Sabaccs) always beat standard Nulrhek hands.</p>
-                </section>
-
-                <section>
-                  <h3 className="text-white font-bold mb-2 uppercase text-xs tracking-widest">The Deck</h3>
-                  <p>The deck consists of 62 cards: 30 positive (1-10 in 3 suits), 30 negative (-1 to -10 in 3 suits), and 2 Sylops (0). The suits are <span className="text-amber-500">Circle</span>, <span className="text-blue-400">Triangle</span>, and <span className="text-red-400">Square</span>.</p>
-                </section>
-
-                <section>
-                  <h3 className="text-white font-bold mb-2 uppercase text-xs tracking-widest">Game Flow</h3>
-                  <ul className="list-disc pl-5 space-y-2">
-                    <li><span className="text-white font-semibold">Ante Phase:</span> Every player pays 10 CR to the Hand Pot and 5 CR to the Sabacc Pot.</li>
-                    <li><span className="text-white font-semibold">Card Phase:</span> Players can Draw a card, Swap a card with the deck, Swap with the discard pile, or Stand.</li>
-                    <li><span className="text-white font-semibold">Betting Phase:</span> Standard betting (Check, Bet, Raise, Call, Fold). Minimum bet is 10 CR.</li>
-                    <li><span className="text-white font-semibold">Spike Dice:</span> Rolled after betting. If the symbols match (doubles), a <span className="text-red-500 font-bold">SABACC SHIFT</span> occurs: everyone discards their hand and gets the same number of cards back from the deck.</li>
-                    <li><span className="text-white font-semibold">Showdown:</span> After 3 rounds, players reveal hands. The winner takes the Hand Pot. A &quot;Sabacc&quot; hand (total 0) or better also takes the Sabacc Pot.</li>
-                  </ul>
-                </section>
-
-                <section>
-                  <h3 className="text-white font-bold mb-2 uppercase text-xs tracking-widest">Tie-Breaking Rules</h3>
-                  <p>If two players have the same score:</p>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Positive scores beat negative scores (e.g., +2 beats -2).</li>
-                    <li>Most cards in hand wins.</li>
-                    <li>Highest positive card in hand wins.</li>
-                    <li>Highest negative card in hand wins.</li>
-                  </ul>
-                </section>
-
-                <section>
-                  <h3 className="text-white font-bold mb-2 uppercase text-xs tracking-widest">Hand Rankings (Highest to Lowest)</h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 font-mono text-[11px]">
-                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Pure Sabacc:</span> 0 with 2 Sylops</span><span className="text-white/40 text-[9px]">&lt; 0.1%</span></div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Full Sabacc:</span> 0 with 1 Sylop + 4 of a kind (10s)</span><span className="text-white/40 text-[9px]">~0.1%</span></div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Fleet:</span> 0 with 1 Sylop + 4 of a kind</span><span className="text-white/40 text-[9px]">~0.2%</span></div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Yee-Haa:</span> 0 with 1 Sylop + 1 pair</span><span className="text-white/40 text-[9px]">~0.5%</span></div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Rhylet:</span> 0 with 3 of a kind + 1 pair</span><span className="text-white/40 text-[9px]">~1%</span></div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Squadron:</span> 0 with 4 of a kind</span><span className="text-white/40 text-[9px]">~2%</span></div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Gee Whiz:</span> 0 with 1,2,3,4 and -10</span><span className="text-white/40 text-[9px]">~3%</span></div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Straight Khyron:</span> 0 with run of 4</span><span className="text-white/40 text-[9px]">~4%</span></div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Banthas Wild:</span> 0 with 3 of a kind</span><span className="text-white/40 text-[9px]">~6%</span></div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Rule of Two:</span> 0 with 2 pairs</span><span className="text-white/40 text-[9px]">~8%</span></div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Sabacc (Pair):</span> 0 with 1 pair</span><span className="text-white/40 text-[9px]">~10%</span></div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-amber-500">Sabacc:</span> just sum 0</span><span className="text-white/40 text-[9px]">~10%</span></div>
-                    <div className="p-2 bg-white/5 rounded border border-white/5 flex justify-between"><span><span className="text-white/40">Nulrhek:</span> Any hand not totaling 0.</span><span className="text-white/40 text-[9px]">~55%</span></div>
-                  </div>
-                </section>
-              </div>
-              
-              <button 
-                onClick={() => setShowRules(false)}
-                className="w-full mt-8 py-4 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl transition-all uppercase tracking-widest"
-              >
-                Got it, User
-              </button>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Edit Credits Modal */}
-      <AnimatePresence>
-        {isEditingCredits && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
-          >
-            <motion.div 
-              initial={{ scale: 0.9 }}
+            <motion.div
+              initial={{ scale: 0.94 }}
               animate={{ scale: 1 }}
-              className="bg-zinc-900 border border-amber-500/30 rounded-2xl p-6 w-full max-w-xs shadow-2xl"
+              className="sw-cut w-full max-w-xs border border-rose-500/45 bg-[#080d14] p-6 text-center shadow-2xl"
             >
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-xl font-bold text-amber-500 uppercase tracking-widest">Edit Credits</h2>
-                <button onClick={() => setIsEditingCredits(false)} className="text-white/40 hover:text-white">
-                  <X className="w-5 h-5" />
-                </button>
+              <div className="font-mono text-xs uppercase tracking-[0.22em] text-rose-400">
+                {cappedByLimit ? 'MAX TABLE BET' : 'ALL IN'}
               </div>
-              
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-xs uppercase tracking-widest text-amber-500/60 mb-2">New Amount</label>
-                  <input 
-                    type="number" 
-                    value={newCreditsAmount}
-                    onChange={(e) => setNewCreditsAmount(parseInt(e.target.value) || 0)}
-                    className="w-full bg-black/40 border border-amber-500/20 rounded-lg py-3 px-4 focus:outline-none focus:border-amber-500 transition-colors font-mono text-lg"
-                    min="0"
-                  />
-                </div>
-                <button 
-                  onClick={handleUpdateCredits}
-                  className="w-full py-3 bg-amber-500 text-black font-bold rounded-xl hover:bg-amber-600 transition-all uppercase tracking-widest"
-                >
-                  Update Credits
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Settings Modal */}
-      <AnimatePresence>
-        {showSettings && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
-          >
-            <motion.div 
-              initial={{ scale: 0.9 }}
-              animate={{ scale: 1 }}
-              className="bg-zinc-900 border border-amber-500/30 rounded-2xl p-6 w-full max-w-xs shadow-2xl"
-            >
-              <h2 className="text-xl font-bold text-amber-500 mb-6 uppercase tracking-widest italic">Settings</h2>
-              
-              <div className="space-y-6">
-                <div className="space-y-3">
-                  <div className="flex justify-between items-center">
-                    <label className="text-xs uppercase tracking-widest text-white/60">Master Volume</label>
-                    <span className="text-xs font-mono text-amber-500">{Math.round(volume * 100)}%</span>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    {volume === 0 ? <VolumeX className="w-4 h-4 text-white/20" /> : <Volume2 className="w-4 h-4 text-white/20" />}
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max="1" 
-                      step="0.01" 
-                      value={volume} 
-                      onChange={(e) => {
-                        setVolume(parseFloat(e.target.value));
-                      }}
-                      className="flex-1 h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-amber-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-3 pt-4 border-t border-white/5">
-                  <label className="text-xs uppercase tracking-widest text-white/60">Game Mode</label>
-                  <button 
-                    onClick={() => {
-                      playSound('click');
-                      socket?.emit('toggleSpectator', {});
-                      setShowSettings(false);
-                    }}
-                    className={`w-full py-3 rounded-xl border transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-[10px] font-bold ${me?.isSpectator ? 'bg-amber-500 text-black border-amber-500' : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'}`}
-                  >
-                    {me?.isSpectator ? <Play className="w-3 h-3 fill-current" /> : <Eye className="w-3 h-3" />}
-                    {me?.isSpectator ? 'Join Game' : 'Spectate'}
-                  </button>
-                </div>
-
-                <button 
-                  onClick={() => setShowSettings(false)}
-                  className="w-full py-3 bg-amber-500 text-black font-bold rounded-xl uppercase tracking-widest text-xs hover:bg-amber-600 transition-all"
-                >
-                  Close
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* All-In Confirmation Modal */}
-      <AnimatePresence>
-        {showAllInConfirm && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md"
-          >
-            <motion.div 
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              className="bg-zinc-900 border border-red-500/30 rounded-2xl p-6 w-full max-w-xs shadow-2xl text-center"
-            >
-              <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-                <AlertCircle className="w-8 h-8 text-red-500" />
-              </div>
-              <h2 className="text-xl font-bold text-white mb-2 uppercase tracking-widest">All In?</h2>
-              <p className="text-white/60 text-sm mb-6">This will bet your entire remaining balance of <span className="text-amber-500 font-bold">{me?.credits} CR</span>. Are you sure?</p>
-              
-              <div className="flex flex-col gap-3">
-                <button 
-                  onClick={() => {
-                    playSound('chips');
-                    betAction('all_in');
-                    setShowAllInConfirm(false);
-                  }}
-                  className="w-full py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl uppercase tracking-widest text-xs transition-all shadow-lg shadow-red-600/20"
-                >
-                  Confirm All In
-                </button>
-                <button 
+              <div className="mt-2 font-mono text-3xl font-bold text-amber-300">{mySpendable} CR</div>
+              {cappedByLimit && (
+                <p className="mt-1.5 text-xs text-slate-400">
+                  {me.credits - mySpendable} CR stays safe in your stack.
+                </p>
+              )}
+              <div className="mt-5 flex gap-2">
+                <button
                   onClick={() => setShowAllInConfirm(false)}
-                  className="w-full py-3 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-xl transition-all text-xs uppercase tracking-widest"
+                  className="sw-cut-sm min-h-[44px] flex-1 border border-white/15 font-mono text-xs uppercase text-white/70 hover:text-white"
                 >
                   Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    sound('chips');
+                    socket?.emit('betAction', { action: 'all_in' });
+                    setShowAllInConfirm(false);
+                  }}
+                  className="sw-cut-sm min-h-[44px] flex-1 bg-rose-500 font-mono text-xs font-bold uppercase text-white hover:bg-rose-400"
+                >
+                  Confirm
                 </button>
               </div>
             </motion.div>
@@ -1050,764 +1168,974 @@ export default function SabaccGame() {
       {/* Buy-In Modal */}
       <AnimatePresence>
         {showBuyIn && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md"
+            className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
           >
-            <motion.div 
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              className="bg-zinc-900 border border-amber-500/30 rounded-2xl p-6 w-full max-w-sm shadow-2xl"
+            <motion.div
+              initial={{ scale: 0.94 }}
+              animate={{ scale: 1 }}
+              className="sw-cut w-full max-w-xs border border-amber-400/45 bg-[#080d14] p-6 shadow-2xl"
             >
-              <h2 className="text-xl font-bold text-amber-500 mb-2 uppercase tracking-widest italic">Request Credits</h2>
-              <p className="text-white/60 text-xs mb-6">Select an amount to buy back into the game. Remember, the house always takes its cut eventually.</p>
-              
-              <div className="flex flex-col gap-3 mb-6">
-                <input 
-                  type="number" 
-                  value={buyInAmount}
-                  onChange={(e) => setBuyInAmount(Number(e.target.value))}
-                  className="w-full bg-black/50 border border-amber-500/30 rounded-xl p-3 text-white text-center text-xl"
-                  min="100"
-                  step="100"
-                />
-                <button 
-                  onClick={() => {
-                    playSound('chips');
-                    socket?.emit('addCredits', { amount: buyInAmount });
-                    setShowBuyIn(false);
-                  }}
-                  className="w-full py-3 bg-amber-500 text-black font-bold rounded-xl hover:bg-amber-600 transition-all uppercase tracking-widest text-sm"
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-xs uppercase tracking-[0.22em] text-amber-400">
+                  Add Chips
+                </span>
+                <button
+                  onClick={() => setShowBuyIn(false)}
+                  aria-label="Close Add Chips"
+                  className="flex h-10 w-10 items-center justify-center text-white/45 hover:text-white"
                 >
-                  Buy In
+                  <X className="h-4 w-4" />
                 </button>
               </div>
-              
-              <button 
-                onClick={() => setShowBuyIn(false)}
-                className="w-full py-3 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-xl transition-all text-xs uppercase tracking-widest"
+              <input
+                type="number"
+                value={buyInAmount}
+                onChange={e => setBuyInAmount(Math.max(50, Number(e.target.value) || 0))}
+                step={100}
+                min={50}
+                className="sw-cut-sm mt-3 min-h-[46px] w-full border border-amber-400/30 bg-black/60 text-center font-mono text-xl text-amber-300 focus:border-amber-400 focus:outline-none"
+              />
+              <button
+                onClick={() => {
+                  sound('chips');
+                  socket?.emit('addCredits', { amount: buyInAmount });
+                  setShowBuyIn(false);
+                }}
+                className="sw-cut-sm mt-4 min-h-[46px] w-full bg-amber-400 font-mono text-xs font-bold uppercase tracking-widest text-zinc-950 hover:bg-amber-300"
               >
-                Maybe Later
+                Add +{buyInAmount} CR
               </button>
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Header */}
+      {/* Toasts */}
       <AnimatePresence>
         {errorMessage && (
-          <motion.div 
-            initial={{ opacity: 0, y: -50 }}
+          <motion.div
+            initial={{ opacity: 0, y: -24 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -50 }}
-            className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] bg-red-600 text-white px-6 py-3 rounded-full shadow-2xl font-bold text-sm tracking-widest uppercase flex items-center gap-2"
+            exit={{ opacity: 0, y: -24 }}
+            className="sw-cut-sm fixed left-1/2 top-16 z-[90] flex -translate-x-1/2 items-center gap-2 border border-rose-500/60 bg-[#180509]/95 px-4 py-2 font-mono text-xs uppercase tracking-wider text-rose-200 shadow-2xl"
           >
-            <AlertCircle className="w-5 h-5" />
+            <AlertCircle className="h-4 w-4 text-rose-400" />
             {errorMessage}
           </motion.div>
         )}
       </AnimatePresence>
 
-      <header className="p-2 sm:p-4 border-b border-white/5 flex justify-between items-center bg-black/50 backdrop-blur-md sticky top-0 z-30">
-        <div className="flex items-center gap-2">
-          <button 
-            onClick={leaveRoom}
-            className="p-1.5 min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 inline-flex items-center justify-center hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
-            title="Leave Room"
-          >
-            <ChevronLeft className="w-5 h-5" />
-          </button>
-          <div className="flex flex-col">
-            <span className="text-[8px] uppercase tracking-widest text-white/40">{me?.isSpectator ? 'Spectator' : 'User'}</span>
-            <span className="text-xs sm:text-sm font-mono text-amber-500">{me?.name}</span>
-          </div>
-        </div>
-        
-        <div className="flex items-center gap-2 sm:gap-5">
-          <div className="hidden sm:flex flex-col items-end">
-            <span className="text-[8px] sm:text-[10px] uppercase tracking-widest text-white/40">Game</span>
-            <span className="text-sm sm:text-lg font-mono font-bold text-white/80">{gameState.gamesPlayed + 1}</span>
-          </div>
-          <div className="flex flex-col items-end">
-            <span className="text-[8px] sm:text-[10px] uppercase tracking-widest text-white/40">Round</span>
-            <span className="text-sm sm:text-lg font-mono font-bold text-blue-400">{gameState.currentRound}/3</span>
-          </div>
-          <div 
-            className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 bg-amber-500/20 border border-amber-500/40 rounded-xl shadow-[0_0_15px_rgba(245,158,11,0.2)] transition-colors ${(gameState.currentPhase === 'JOINING' || gameState.currentPhase === 'SHOWDOWN') ? 'cursor-pointer hover:bg-amber-500/30' : ''}`}
-            onClick={() => {
-              if (gameState.currentPhase === 'JOINING' || gameState.currentPhase === 'SHOWDOWN') {
-                playSound('click');
-                setNewCreditsAmount(me?.credits || 0);
-                setIsEditingCredits(true);
-              }
-            }}
-            title={(gameState.currentPhase === 'JOINING' || gameState.currentPhase === 'SHOWDOWN') ? "Edit Credits" : "Credits"}
-          >
-            <Coins className="w-4 h-4 sm:w-5 sm:h-5 text-amber-500" />
-            <span className="text-base sm:text-xl font-mono font-bold text-amber-500">{me?.credits || 0}</span>
-          </div>
-          <div className="flex items-center gap-0 sm:gap-1 ml-0 sm:ml-2 border-l border-white/10 pl-1 sm:pl-3">
-            <button 
-              onClick={() => {
-                setShowRules(true);
-                setIsRulesPinned(false);
-              }}
-              className="p-1.5 min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 inline-flex items-center justify-center hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
-            >
-              <HelpCircle className="w-4 h-4" />
-            </button>
-            <button 
-              onClick={() => setShowSettings(true)}
-              className="p-1.5 min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 inline-flex items-center justify-center hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
-            >
-              <Settings className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Pinned Rules Sidebar */}
       <AnimatePresence>
-        {isRulesPinned && showRules && (
-          <motion.div 
-            initial={{ x: 300, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            exit={{ x: 300, opacity: 0 }}
-            className="fixed right-2 sm:right-4 top-20 bottom-20 w-48 sm:w-64 bg-black/80 border border-amber-500/20 rounded-2xl z-40 p-3 sm:p-4 overflow-y-auto backdrop-blur-xl shadow-[0_0_30px_rgba(245,158,11,0.1)]"
+        {milestoneBanner && (
+          <motion.div
+            initial={{ opacity: 0, y: -24 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -24 }}
+            className="sw-cut-sm fixed left-1/2 top-16 z-[88] flex -translate-x-1/2 items-center gap-2 border border-amber-400/70 bg-[#140f05]/95 px-4 py-2 font-mono text-xs font-bold uppercase tracking-[0.2em] text-amber-300 shadow-[0_0_30px_rgba(251,191,36,0.35)]"
           >
-            <div className="flex justify-between items-center mb-4 border-b border-white/10 pb-2">
-              <h3 className="text-[10px] sm:text-xs font-bold text-amber-500 font-mono uppercase tracking-widest">Holographic Rules</h3>
-              <button 
-                onClick={() => setIsRulesPinned(false)} 
-                className="text-white/40 hover:text-white transition-colors"
-                title="Unpin"
-              >
-                <PinOff className="w-3 h-3 sm:w-4 sm:h-4" />
-              </button>
-            </div>
-            <div className="space-y-4 text-[9px] sm:text-[10px] text-white/60 leading-relaxed">
-              <section>
-                <h4 className="text-white font-bold mb-1 uppercase tracking-widest">The Goal</h4>
-                <p>Get a hand total as close to <span className="text-amber-500">0</span> as possible. Positive totals beat negative totals (e.g., +1 beats -1).</p>
-              </section>
-              <section>
-                <h4 className="text-white font-bold mb-1 uppercase tracking-widest">Hand Rankings</h4>
-                <ul className="space-y-1">
-                  <li className="flex justify-between"><span className="text-amber-500/80">Pure Sabacc: 2 Sylops</span> <span className="text-white/40">&lt;0.1%</span></li>
-                  <li className="flex justify-between"><span>Full Sabacc: 1 Sylop + 4x10s</span> <span className="text-white/40">~0.1%</span></li>
-                  <li className="flex justify-between"><span>Fleet: 1 Sylop + 4 of a kind</span> <span className="text-white/40">~0.2%</span></li>
-                  <li className="flex justify-between"><span>Yee-Haa: 1 Sylop + 1 pair</span> <span className="text-white/40">~0.5%</span></li>
-                  <li className="flex justify-between"><span>Rhylet: 3 of a kind + 1 pair</span> <span className="text-white/40">~1%</span></li>
-                  <li className="flex justify-between"><span>Squadron: 4 of a kind</span> <span className="text-white/40">~2%</span></li>
-                  <li className="flex justify-between"><span>Gee Whiz: 1,2,3,4, -10</span> <span className="text-white/40">~3%</span></li>
-                  <li className="flex justify-between"><span>Straight Khyron: Run of 4</span> <span className="text-white/40">~4%</span></li>
-                  <li className="flex justify-between"><span>Banthas Wild: 3 of a kind</span> <span className="text-white/40">~6%</span></li>
-                  <li className="flex justify-between"><span>Rule of Two: 2 pairs</span> <span className="text-white/40">~8%</span></li>
-                  <li className="flex justify-between"><span>Sabacc (Pair): 1 pair</span> <span className="text-white/40">~10%</span></li>
-                  <li className="flex justify-between"><span>Sabacc: Sum 0</span> <span className="text-white/40">~10%</span></li>
-                  <li className="flex justify-between"><span>Nulrhek: Not 0</span> <span className="text-white/40">~55%</span></li>
-                </ul>
-              </section>
-              <section>
-                <h4 className="text-white font-bold mb-1 uppercase tracking-widest">Game Flow</h4>
-                <ul className="space-y-1">
-                  <li><span className="text-white">Ante:</span> 10 CR Hand, 5 CR Sabacc.</li>
-                  <li><span className="text-white">Rounds:</span> 3 rounds total.</li>
-                  <li><span className="text-white">Card Phase:</span> Draw, Swap, or Stand.</li>
-                  <li><span className="text-white">Betting:</span> Minimum bet is 10 CR.</li>
-                  <li><span className="text-white">Dice:</span> Rolled after betting. Doubles = <span className="text-red-500">SHIFT</span> (All redeal).</li>
-                </ul>
-              </section>
-              <section>
-                <h4 className="text-white font-bold mb-1 uppercase tracking-widest">Tie-Breaking</h4>
-                <ol className="list-decimal pl-3 space-y-1">
-                  <li>Positive beats Negative</li>
-                  <li>Most cards in hand</li>
-                  <li>Highest positive card</li>
-                  <li>Highest suit (Circle &gt; Triangle &gt; Square)</li>
-                </ol>
-              </section>
-              <section>
-                <h4 className="text-white font-bold mb-1 uppercase tracking-widest">The Pots</h4>
-                <p><span className="text-amber-500">Hand Pot:</span> Won by the best hand.</p>
-                <p><span className="text-red-500">Sabacc Pot:</span> Won only by a specialty hand totaling 0 (Sabacc Pair or better).</p>
-              </section>
-            </div>
+            <Sparkles className="h-4 w-4 text-amber-400" />
+            {milestoneBanner}
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Main Table Area */}
-      <main className="flex-1 min-h-0 relative p-2 sm:p-4 flex flex-col items-center justify-center overflow-hidden min-h-[260px]">
-          {me?.isSpectator && (
-            <div className="absolute top-4 z-50 w-full max-w-md bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex items-center justify-between backdrop-blur-sm">
-              <div className="flex items-center gap-3">
-                <Eye className="w-5 h-5 text-amber-500" />
-                <div className="flex flex-col">
-                  <span className="text-xs font-bold text-amber-500 uppercase tracking-widest">Spectator Mode</span>
-                  <span className="text-[10px] text-amber-500/60">You are watching the game</span>
-                </div>
-              </div>
-            <button 
+      {/* Clean Minimal Top Bar (All buttons >= 44x44px) */}
+      <header className="safe-top z-30 flex min-h-13 shrink-0 items-center justify-between border-b border-white/10 bg-[#060a10]/85 px-2 sm:px-5 backdrop-blur-md">
+        <div className="flex items-center gap-1 min-w-0">
+          <button
+            onClick={leaveRoom}
+            aria-label="Leave Table"
+            className="flex h-11 w-11 shrink-0 items-center justify-center text-slate-300 hover:text-white"
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </button>
+
+          {gameState.mode === 'party' ? (
+            <button
               onClick={() => {
-                playSound('click');
-                socket?.emit('toggleSpectator', {});
+                sound('click');
+                setShowQrInvite(true);
               }}
-              className="px-4 py-2 bg-amber-500 text-black font-bold rounded-lg text-[10px] uppercase tracking-widest hover:bg-amber-600 transition-all"
+              className="sw-cut-sm flex min-h-[38px] items-center gap-1.5 border border-cyan-400/30 bg-cyan-500/10 px-3 font-mono text-xs tracking-widest text-cyan-200 hover:bg-cyan-500/20"
             >
-              Join Game
+              <QrCode className="h-3.5 w-3.5 text-cyan-300" />
+              <span>{gameState.roomId}</span>
             </button>
+          ) : (
+            <div className="truncate font-mono text-xs uppercase tracking-wider text-slate-300">
+              {gameState.tour ? (
+                <span>
+                  {gameState.tour.venueName}{' '}
+                  <span className="text-amber-300">
+                    • {me?.credits ?? 0}/{gameState.tour.targetCredits}
+                  </span>
+                </span>
+              ) : gameState.daily ? (
+                <span>
+                  Daily {gameState.daily.handsCompleted}/{gameState.daily.maxHands}
+                </span>
+              ) : (
+                <span>Cantina Table</span>
+              )}
             </div>
           )}
+        </div>
 
-        <div className="relative w-full max-w-5xl flex-1 min-h-0 flex items-center justify-center mt-4 sm:mt-12">
-          {/* Opponents */}
-          {displayedPlayers.filter(p => p.id !== myPlayerId).map((p, i, arr) => (
-            <div
-              key={p.id}
-              style={getOpponentStyle(i, arr.length)}
-              className={`flex flex-col items-center p-2 sm:p-3 rounded-xl border transition-all w-[clamp(76px,21vw,128px)] z-10 ${p.isFolded ? 'opacity-40 grayscale' : 'bg-black/60 backdrop-blur-md border-white/10 shadow-xl'} ${p.isConnected === false ? 'ring-1 ring-red-500/40' : ''}`}
-            >
-              {/* Dealer Button for Opponents */}
-              {gameState.players[gameState.dealerIndex]?.id === p.id && (
-                <div className="absolute -top-2 -right-2 w-5 h-5 bg-amber-500 rounded-full border border-black flex items-center justify-center shadow-lg z-10" title="Dealer">
-                  <span className="text-[8px] font-bold text-black">D</span>
-                </div>
-              )}
-              {gameState.currentPhase === 'JOINING' && p.isAI && (
-                <button 
-                  onClick={() => removeAI(p.id)}
-                  className="absolute -top-2 -left-2 w-7 h-7 sm:w-5 sm:h-5 inline-flex items-center justify-center bg-red-500 hover:bg-red-600 text-white rounded-full shadow-lg transition-colors z-10"
-                  title="Remove Bot"
-                >
-                  <LogOut className="w-3 h-3" />
-                </button>
-              )}
-              <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-gradient-to-br from-amber-500 to-amber-700 flex items-center justify-center mb-1 shadow-lg">
-                <User className="w-4 h-4 sm:w-5 sm:h-5 text-black" />
-              </div>
-              <span className="text-[10px] sm:text-xs font-medium flex items-center gap-1">
-                {p.name}
-                {p.isAI && <span className="text-[7px] bg-white/10 px-1 rounded text-white/40">AI</span>}
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => {
+              sound('click');
+              if (
+                !gameState.settings.lockedCredits &&
+                (gameState.currentPhase === 'JOINING' || gameState.currentPhase === 'SHOWDOWN')
+              ) {
+                setShowBuyIn(true);
+              } else {
+                setShowLedger(true);
+              }
+            }}
+            className="sw-cut-sm flex min-h-[40px] items-center gap-1.5 border border-amber-400/40 bg-amber-500/10 px-3 font-mono text-xs sm:text-sm text-amber-300 hover:bg-amber-500/20"
+          >
+            <Coins className="h-4 w-4 text-amber-400" />
+            <AnimatedCredits value={me?.credits ?? 0} showDelta className="font-bold" />
+            {dossier.currentStreak >= 2 && (
+              <span className="ml-0.5 inline-flex items-center gap-0.5 text-[11px] font-bold text-orange-300">
+                <Flame className="h-3.5 w-3.5 text-orange-400" />
+                {dossier.currentStreak}
               </span>
-              <span className="text-[8px] sm:text-[10px] text-amber-500/60 font-mono">{p.credits} CR</span>
-              
-              {/* Hands grow past two cards, so on a phone they fan and overlap
-                  instead of pushing the seat wider than the screen. */}
-              <div className="flex mt-2 justify-center -space-x-5 sm:space-x-0 sm:gap-2">
-                {p.hand.map((card) => (
-                  <motion.div
-                    key={card.id}
-                    layoutId={card.id}
-                    initial={{ scale: 0, x: 0, y: -50 }}
-                    animate={{ scale: 1, x: 0, y: 0 }}
-                    transition={{ type: "spring", stiffness: 400, damping: 25, mass: 0.8 }}
-                    className="shrink-0 w-8 h-11 text-[26px] sm:w-14 sm:h-20 sm:text-[40px]"
-                  >
-                    <SabaccCard
-                      card={card}
-                      faceDown={gameState.currentPhase !== 'SHOWDOWN'}
-                      detail="numeral"
-                      className="w-full h-full"
-                    />
-                  </motion.div>
-                ))}
-              </div>
+            )}
+          </button>
 
-              {gameState.currentPhase === 'SHOWDOWN' && !p.isFolded && (
-                <div className="mt-1 text-[7px] sm:text-[8px] font-mono text-amber-500/80 bg-black/40 px-1.5 py-0.5 rounded border border-amber-500/20 text-center">
-                  {evaluateHand(p.hand).rankName}
-                </div>
-              )}
+          <button
+            onClick={() => {
+              sound('click');
+              if (!dossier.tutorialCompleted) setShowTutorial(true);
+              else setShowRules(v => !v);
+            }}
+            aria-label="How to Play"
+            className="sw-cut-sm flex h-11 w-11 items-center justify-center border border-white/12 bg-white/[0.04] text-slate-300 hover:border-amber-400/50 hover:text-amber-300 active:scale-95"
+          >
+            <HelpCircle className="h-4 w-4" />
+          </button>
 
-              {gameState.currentPhase === 'JOINING' && (
-                <div className={`mt-1 text-[7px] sm:text-[8px] uppercase tracking-widest ${p.isReady ? 'text-green-500' : 'text-white/20'}`}>
-                  {p.isReady ? 'Ready' : 'Waiting'}
-                </div>
-              )}
-            </div>
-          ))}
+          <button
+            onClick={() => {
+              sound('click');
+              setShowDrawer(true);
+            }}
+            aria-label="Open Table Menu"
+            className="sw-cut-sm relative flex h-11 w-11 items-center justify-center border border-white/12 bg-white/[0.04] text-slate-300 hover:border-cyan-400/50 hover:text-cyan-200"
+          >
+            <Menu className="h-4 w-4" />
+            {unreadChat && (
+              <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-amber-400" />
+            )}
+          </button>
+        </div>
+      </header>
 
-        {/* Center Table */}
-        <div className="w-full max-w-lg sm:max-w-2xl py-8 sm:py-16 sm:aspect-[2.5/1] rounded-[40px] sm:rounded-[100px] border-4 border-amber-900/30 bg-gradient-to-b from-amber-900/20 to-transparent flex flex-col items-center justify-center gap-2 relative z-0 shadow-[inset_0_0_50px_rgba(0,0,0,0.5)]">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(245,158,11,0.05)_0%,transparent_70%)]" />
-          
-          {/* Draw Deck & Discard Pile */}
-          {gameState.currentPhase !== 'SHOWDOWN' && (
-            <div className="flex gap-6 sm:gap-8 items-center z-10 scale-90 sm:scale-100">
-              {/* Draw Deck */}
-              <div className="flex flex-col items-center gap-1">
-                <span className="text-[10px] uppercase tracking-widest text-white/20">Draw</span>
-                <div className="relative">
-                  <SabaccCard faceDown className="w-16 h-24 sm:w-20 sm:h-28" />
-                  <div className="absolute -top-1 -right-1 -z-10 w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 border-amber-600/30 bg-[#0c0a08]" />
-                </div>
-              </div>
+      {/* FULL-BLEED RECESSED CANTINA HOLOTABLE — Fills the entire playfield with zero dead space */}
+      <main className="relative flex min-h-0 flex-1 flex-col p-2 sm:p-4">
+        <div
+          onClick={() => setSeatMenuPlayerId(null)}
+          style={{
+            background:
+              isLight && activeFeltId === 'cantina-brass'
+                ? 'radial-gradient(ellipse at 50% 46%, #1e293b 0%, #0f172a 66%, #070b13 100%)'
+                : feltSpec.feltStyle,
+          }}
+          className={`holotable-felt relative mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col justify-between overflow-hidden rounded-[34px] sm:rounded-[52px] border-[3px] px-3 py-3 sm:px-8 sm:py-5 ${
+            isLight && activeFeltId === 'cantina-brass'
+              ? 'border-slate-700/85 shadow-[0_24px_60px_rgba(15,23,42,0.35),inset_0_0_75px_rgba(0,0,0,0.8)]'
+              : feltSpec.railClass
+          }`}
+        >
+          {/* Diegetic Recessed Holotable Inlays & Inner Bumper Ring */}
+          <div className="pointer-events-none absolute inset-2 sm:inset-3 rounded-[26px] sm:rounded-[42px] border border-amber-400/[0.14]" />
+          <svg
+            className="pointer-events-none absolute inset-0 h-full w-full text-amber-400/[0.11]"
+            viewBox="0 0 600 600"
+            preserveAspectRatio="xMidYMid slice"
+            aria-hidden
+          >
+            <circle cx="300" cy="300" r="225" fill="none" stroke="currentColor" strokeWidth="1" strokeDasharray="4 9" />
+            <circle cx="300" cy="300" r="155" fill="none" stroke="currentColor" strokeWidth="0.9" />
+            <polygon points="300,95 505,300 300,505 95,300" fill="none" stroke="currentColor" strokeWidth="0.9" />
+          </svg>
 
-              {/* Central Pots */}
-              <div className="flex flex-col items-center gap-2 px-6 py-3 bg-black/40 rounded-2xl border border-white/5 backdrop-blur-sm">
-                {/* The code is server-generated, so this is the only place the
-                    host can read it off to share. */}
-                <button
-                  onClick={() => {
-                    navigator.clipboard?.writeText(gameState.roomId);
-                    playSound('click');
-                    setErrorMessage(`Room code ${gameState.roomId} copied`);
-                    setTimeout(() => setErrorMessage(null), 2500);
+          {/* 1. UPPER FELT RIM: Opponents Seated Directly on the Holotable */}
+          <div className="relative z-20 flex flex-wrap items-start justify-center gap-2 sm:gap-3.5 pt-0.5">
+            {opponents.map((p: Player) => {
+              const isTurnSeat = isHandInPlay && gameState.players[gameState.turnIndex]?.id === p.id;
+              const isDealer = gameState.players[gameState.dealerIndex]?.id === p.id;
+              const isShowdownWinner =
+                gameState.currentPhase === 'SHOWDOWN' && gameState.winnerIds.includes(p.id);
+              const revealedEval =
+                gameState.currentPhase === 'SHOWDOWN' &&
+                !p.isFolded &&
+                p.hand.length > 0 &&
+                !p.hand[0]?.hidden
+                  ? evaluateHand(p.hand)
+                  : null;
+              const isMuted = mutedNames.includes(p.name);
+              const canModerate = gameState.mode === 'party' && !p.isAI;
+
+              return (
+                <div
+                  key={p.id}
+                  onClick={e => {
+                    if (!canModerate) return;
+                    e.stopPropagation();
+                    setSeatMenuPlayerId(curr => (curr === p.id ? null : p.id));
                   }}
-                  title="Copy room code"
-                  className="flex flex-col items-center group"
+                  className={`sw-cut-sm relative flex min-w-[98px] sm:min-w-[146px] max-w-[172px] flex-col items-center border px-2.5 py-2 sm:px-3.5 sm:py-2.5 backdrop-blur-md transition-all ${
+                    canModerate ? 'cursor-pointer' : ''
+                  } ${
+                    p.isFolded
+                      ? 'border-white/10 bg-black/40 opacity-45'
+                      : isShowdownWinner
+                        ? 'border-amber-400 bg-amber-500/20 shadow-[0_0_28px_rgba(251,191,36,0.38)]'
+                        : isTurnSeat
+                          ? 'border-cyan-400 bg-[#071522]/90 shadow-[0_0_24px_rgba(34,211,238,0.32)]'
+                          : 'border-white/15 bg-black/55'
+                  }`}
                 >
-                  <span className="text-[8px] sm:text-[10px] uppercase tracking-[0.2em] text-white/30">Room Code</span>
-                  <span className="text-lg sm:text-xl font-mono text-amber-400 font-bold tracking-[0.25em] group-hover:text-amber-300">
-                    {gameState.roomId}
-                  </span>
-                </button>
-                <div className="w-8 h-px bg-white/10" />
-                <div className="flex flex-col items-center">
-                  <span className="text-[8px] sm:text-[10px] uppercase tracking-[0.2em] text-white/30">Main Pot</span>
-                  <span className="text-xl sm:text-2xl font-mono text-amber-500 font-bold">{gameState.handPot}</span>
-                </div>
-                <div className="w-8 h-px bg-white/10" />
-                <div className="flex flex-col items-center">
-                  <span className="text-[8px] sm:text-[10px] uppercase tracking-[0.2em] text-white/30">Sabacc Pot</span>
-                  <span className="text-lg sm:text-xl font-mono text-red-500/80">{gameState.sabaccPot}</span>
-                </div>
-              </div>
+                  <div className="flex w-full items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-amber-400/35 bg-amber-500/15 font-mono text-[10px] font-bold uppercase text-amber-300">
+                        {p.name.slice(0, 1)}
+                      </span>
+                      <span className="truncate text-xs sm:text-sm font-semibold text-white">
+                        {p.name}
+                      </span>
+                    </div>
+                    <span className="shrink-0 font-mono text-[11px] font-bold text-amber-300/90">
+                      {p.credits}
+                    </span>
+                  </div>
 
-              {/* Discard Pile */}
-              <div className="flex flex-col items-center gap-1">
-                <span className="text-[10px] uppercase tracking-widest text-white/20">Discard</span>
-                {gameState.discardPile.length > 0 ? (
-                  <SabaccCard
-                    card={gameState.discardPile[gameState.discardPile.length - 1]}
-                    className="w-16 h-24 text-[44px] sm:w-20 sm:h-28 sm:text-[52px]"
-                  />
-                ) : (
-                  <div className="w-16 h-24 sm:w-20 sm:h-28 rounded-lg border-2 border-dashed border-white/10 flex items-center justify-center">
-                    <span className="text-[8px] uppercase tracking-widest text-white/10">Empty</span>
+                  {isDealer && (
+                    <span
+                      className="absolute -right-1 -top-1 flex h-4.5 w-4.5 items-center justify-center rounded-sm bg-amber-400 font-mono text-[9px] font-bold text-zinc-950 shadow"
+                      title="Dealer"
+                    >
+                      D
+                    </span>
+                  )}
+
+                  {p.hand.length > 0 && (
+                    <div
+                      className={`mt-1.5 flex items-center justify-center ${
+                        revealedEval ? 'gap-1' : '-space-x-3 sm:-space-x-2.5'
+                      }`}
+                    >
+                      {p.hand.map(card => (
+                        <motion.div
+                          key={card.id}
+                          initial={{ scale: 0.75, opacity: 0 }}
+                          animate={{ scale: 1, opacity: 1 }}
+                          className={
+                            revealedEval
+                              ? 'h-14 w-10 text-[24px] sm:h-17 sm:w-12 sm:text-[30px]'
+                              : 'h-12.5 w-9 text-[20px] sm:h-15 sm:w-10.5 sm:text-[26px]'
+                          }
+                        >
+                          <SabaccCard
+                            card={card}
+                            faceDown={!!card.hidden}
+                            detail="numeral"
+                            cardBack={dossier.selectedCardBack}
+                            lightMode={isLight}
+                            className="h-full w-full"
+                          />
+                        </motion.div>
+                      ))}
+                    </div>
+                  )}
+
+                  {revealedEval ? (
+                    <span className="mt-1 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-300">
+                      {revealedEval.sum === 0
+                        ? `★ ${revealedEval.rankName}`
+                        : `Total ${revealedEval.sum > 0 ? `+${revealedEval.sum}` : revealedEval.sum}`}
+                    </span>
+                  ) : p.lastAction && !(isMuted && p.lastAction.tone === 'emote') ? (
+                    <span
+                      className={`mt-1 max-w-full truncate font-mono text-[10px] ${
+                        p.lastAction.tone === 'quips' || p.lastAction.tone === 'emote'
+                          ? 'italic text-amber-200/90'
+                          : p.lastAction.tone === 'raise' || p.lastAction.tone === 'all_in'
+                            ? 'font-bold text-amber-300'
+                            : p.lastAction.tone === 'fold'
+                              ? 'text-rose-300/80'
+                              : 'text-cyan-200/90'
+                      }`}
+                      title={p.lastAction.text}
+                    >
+                      {p.lastAction.text}
+                    </span>
+                  ) : null}
+
+                  {/* Multiplayer UGC Safety Popover (Mute / Report) */}
+                  {seatMenuPlayerId === p.id && canModerate && (
+                    <div
+                      onClick={e => e.stopPropagation()}
+                      className="sw-cut-sm absolute top-full mt-1.5 z-40 flex gap-1 border border-cyan-400/40 bg-[#070b12] p-1.5 shadow-2xl"
+                    >
+                      <button
+                        onClick={() => {
+                          setMutedNames(curr =>
+                            curr.includes(p.name) ? curr.filter(n => n !== p.name) : [...curr, p.name]
+                          );
+                          setSeatMenuPlayerId(null);
+                        }}
+                        className="flex min-h-[36px] items-center gap-1 rounded px-2.5 font-mono text-[10px] uppercase text-slate-200 hover:bg-white/10"
+                      >
+                        <VolumeX className="h-3.5 w-3.5" /> {isMuted ? 'Unmute' : 'Mute'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          socket?.emit('reportPlayer', { targetName: p.name, reason: 'Reported at table' });
+                          setMutedNames(curr => (curr.includes(p.name) ? curr : [...curr, p.name]));
+                          setSeatMenuPlayerId(null);
+                          setMilestoneBanner(`REPORTED & MUTED // ${p.name.toUpperCase()}`);
+                          setTimeout(() => setMilestoneBanner(null), 2600);
+                        }}
+                        className="flex min-h-[36px] items-center gap-1 rounded px-2.5 font-mono text-[10px] uppercase text-rose-300 hover:bg-rose-500/20"
+                      >
+                        <Flag className="h-3.5 w-3.5" /> Report
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 2. CENTER FELT WELL: Shoe + Docked Spike Dice & Pots + Face-Up Discard */}
+          <div className="relative z-10 flex flex-col items-center justify-center gap-2.5 py-1">
+            {gameState.currentPhase === 'SHOWDOWN' ? (
+              <ShowdownOverlay
+                gameState={gameState}
+                myPlayerId={myPlayerId}
+                currentStreak={dossier.currentStreak}
+                discordShareEnabled={!isLocalSolo && !!lobbySnapshot?.discordShareEnabled}
+                onNextHand={() => {
+                  sound('click');
+                  socket?.emit('ready', {});
+                }}
+                onAdvanceTour={() => {
+                  sound('sabacc_pot');
+                  socket?.emit('advanceTourStage', {});
+                }}
+                onRequestCredits={() => {
+                  sound('click');
+                  setShowBuyIn(true);
+                }}
+                onLeaveRoom={leaveRoom}
+                onStartFreshMode={startFreshFromInside}
+              />
+            ) : (
+              <>
+                <SpikeDiceCradle
+                  roll={gameState.lastDiceRoll}
+                  round={gameState.currentRound}
+                  activeHand={gameState.currentPhase !== 'JOINING'}
+                  diceStyle={dossier.selectedDice}
+                />
+
+                <div className="flex w-full items-center justify-around sm:justify-center sm:gap-10">
+                  {/* Draw Shoe */}
+                  <div className="flex flex-col items-center gap-1.5">
+                    <div className="relative">
+                      <div className="hex-card pointer-events-none absolute -right-1.5 -top-1.5 h-26 w-18 sm:h-33 sm:w-23 bg-amber-950/65" />
+                      <div className="hex-card pointer-events-none absolute -right-0.5 -top-0.5 h-26 w-18 sm:h-33 sm:w-23 bg-amber-900/50" />
+                      <SabaccCard
+                        faceDown
+                        cardBack={dossier.selectedCardBack}
+                        interactiveHint={isMyTurn && gameState.currentPhase === 'CARD'}
+                        onClick={
+                          isMyTurn && gameState.currentPhase === 'CARD'
+                            ? () => {
+                                sound('card');
+                                socket?.emit('cardAction', {
+                                  action: selectedCardId ? 'swap_deck' : 'draw',
+                                  cardId: selectedCardId ?? undefined,
+                                });
+                                setSelectedCardId(null);
+                                setPendingSwapMode(null);
+                              }
+                            : undefined
+                        }
+                        title={
+                          isMyTurn && gameState.currentPhase === 'CARD'
+                            ? selectedCardId
+                              ? 'Swap selected card with Deck'
+                              : 'Draw a card from Deck'
+                            : `Deck (${gameState.deckCount} cards)`
+                        }
+                        className="relative z-10 h-26 w-18 sm:h-33 sm:w-23"
+                      />
+                    </div>
+                    <span
+                      className={`font-mono text-[10px] font-bold uppercase tracking-wider ${
+                        isMyTurn && gameState.currentPhase === 'CARD' && selectedCardId
+                          ? 'text-cyan-300'
+                          : 'text-slate-300/80'
+                      }`}
+                    >
+                      {isMyTurn && gameState.currentPhase === 'CARD'
+                        ? selectedCardId
+                          ? 'Swap Deck'
+                          : 'Deck'
+                        : `Deck · ${gameState.deckCount}`}
+                    </span>
+                  </div>
+
+                  {/* Central Pot Well */}
+                  <div className="sw-cut flex flex-col sm:flex-row items-center gap-2.5 sm:gap-7 border border-amber-400/30 bg-black/65 px-4 py-3 sm:px-7 sm:py-4 shadow-[0_12px_36px_rgba(0,0,0,0.65)] backdrop-blur-md">
+                    <div className="flex flex-col items-center">
+                      <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-amber-200/70">
+                        Hand Pot
+                      </span>
+                      <div className="mt-0.5 flex items-center gap-1.5 sm:gap-2">
+                        <CreditIngotStack amount={gameState.handPot} variant="gold" size="sm" />
+                        <AnimatedCredits
+                          value={gameState.handPot}
+                          className="font-mono text-2xl sm:text-3xl font-bold text-amber-400"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="h-px w-14 sm:h-9 sm:w-px bg-white/12" />
+
+                    <div className="flex flex-col items-center">
+                      <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-rose-200/75">
+                        Sabacc Pot
+                      </span>
+                      <div className="mt-0.5 flex items-center gap-1.5 sm:gap-2">
+                        <CreditIngotStack amount={gameState.sabaccPot} variant="crimson" size="sm" />
+                        <AnimatedCredits
+                          value={gameState.sabaccPot}
+                          className="font-mono text-2xl sm:text-3xl font-bold text-rose-400"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Face-Up Discard Pile */}
+                  <div className="flex flex-col items-center gap-1.5">
+                    {topDiscard ? (
+                      <SabaccCard
+                        card={topDiscard}
+                        cardBack={dossier.selectedCardBack}
+                        lightMode={isLight}
+                        onClick={
+                          isMyTurn && gameState.currentPhase === 'CARD'
+                            ? () => {
+                                if (selectedCardId) {
+                                  sound('card');
+                                  socket?.emit('cardAction', {
+                                    action: 'swap_discard',
+                                    cardId: selectedCardId,
+                                  });
+                                  setSelectedCardId(null);
+                                  setPendingSwapMode(null);
+                                } else {
+                                  sound('click');
+                                  setPendingSwapMode(curr =>
+                                    curr === 'swap_discard' ? null : 'swap_discard'
+                                  );
+                                }
+                              }
+                            : undefined
+                        }
+                        title={
+                          isMyTurn && gameState.currentPhase === 'CARD'
+                            ? selectedCardId
+                              ? `Trade selected card for ${topDiscardLabel}`
+                              : `Tap to trade a card in hand for ${topDiscardLabel}`
+                            : 'Discard Pile'
+                        }
+                        className={`h-26 w-18 text-[42px] sm:h-33 sm:w-23 sm:text-[54px] ${
+                          isMyTurn &&
+                          gameState.currentPhase === 'CARD' &&
+                          (selectedCardId || pendingSwapMode === 'swap_discard')
+                            ? 'ring-2 ring-amber-400 shadow-[0_0_26px_rgba(251,191,36,0.5)]'
+                            : ''
+                        }`}
+                      />
+                    ) : (
+                      <div className="hex-card flex h-26 w-18 sm:h-33 sm:w-23 items-center justify-center border border-dashed border-white/15 bg-black/30 font-mono text-xs text-white/30">
+                        —
+                      </div>
+                    )}
+                    <span
+                      className={`font-mono text-[10px] font-bold uppercase tracking-wider ${
+                        isMyTurn &&
+                        gameState.currentPhase === 'CARD' &&
+                        (selectedCardId || pendingSwapMode === 'swap_discard')
+                          ? 'text-amber-300'
+                          : 'text-slate-300/80'
+                      }`}
+                    >
+                      {isMyTurn && gameState.currentPhase === 'CARD' && topDiscard
+                        ? `Take ${topDiscardLabel}`
+                        : 'Discard'}
+                    </span>
+                  </div>
+                </div>
+              </>
+            )}
+
+            <AnimatePresence>
+              {gameState.currentPhase === 'DICE' && (
+                <SpikeDiceOverlay
+                  roll={gameState.lastDiceRoll}
+                  tumbleFirst={tumbleFirst}
+                  tumbleSecond={tumbleSecond}
+                  shiftTriggered={gameState.shiftTriggered}
+                  diceStyle={dossier.selectedDice}
+                />
+              )}
+            </AnimatePresence>
+
+            {gameState.currentPhase === 'JOINING' && (
+              <div className="z-20 mt-2 flex flex-wrap items-center justify-center gap-2">
+                {!me?.isSpectator && !me?.isReady && (
+                  (me?.credits ?? 0) < reqAnte ? (
+                    <button
+                      onClick={() => setShowBuyIn(true)}
+                      className="sw-cut-sm min-h-[46px] bg-amber-400 px-5 font-mono text-xs font-bold uppercase tracking-widest text-zinc-950"
+                    >
+                      Add Chips ({reqAnte}+ CR)
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        sound('click');
+                        socket?.emit('ready', {});
+                      }}
+                      className="sw-cut-sm flex min-h-[46px] items-center gap-2 bg-amber-400 px-6 font-mono text-xs font-bold uppercase tracking-[0.2em] text-zinc-950 shadow-[0_0_24px_rgba(251,191,36,0.35)] hover:bg-amber-300"
+                    >
+                      <Play className="h-4 w-4 fill-current" /> Deal Hand
+                    </button>
+                  )
+                )}
+
+                {isHost &&
+                  gameState.players.length >= 2 &&
+                  gameState.players.some(p => !p.isAI && !p.isReady) && (
+                    <button
+                      onClick={() => socket?.emit('startHandNow', {})}
+                      className="sw-cut-sm min-h-[44px] border border-amber-400/45 bg-black/70 px-4 font-mono text-xs uppercase tracking-wider text-amber-300 hover:bg-amber-500/20"
+                    >
+                      Start Now
+                    </button>
+                  )}
+
+                {(gameState.mode === 'party' || gameState.mode === 'quick_solo') &&
+                  gameState.players.length < 6 && (
+                    <div className="flex items-center gap-1.5">
+                      {(
+                        [
+                          { id: 'novice', label: '+Easy Bot' },
+                          { id: 'regular', label: '+Bot' },
+                          { id: 'shark', label: '+Pro Bot' },
+                        ] as { id: BotSkill; label: string }[]
+                      ).map(sk => (
+                        <button
+                          key={sk.id}
+                          onClick={() => {
+                            sound('click');
+                            socket?.emit('addAI', { skill: sk.id });
+                          }}
+                          className="sw-cut-sm min-h-[40px] border border-white/15 bg-black/60 px-3 font-mono text-[11px] uppercase text-slate-200 hover:border-cyan-400/50 hover:text-cyan-200"
+                        >
+                          {sk.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+              </div>
+            )}
+          </div>
+
+          {/* 3. LOWER FELT RIM: Large Tactile Player Hand & Single Intuitive Total Pill */}
+          <div className="relative z-20 flex flex-col items-center gap-2 pb-0.5">
+            {pendingSwapMode && isMyTurn && gameState.currentPhase === 'CARD' && (
+              <div className="sw-cut-sm flex items-center gap-2 border border-amber-400 bg-amber-500/20 px-3.5 py-1.5 font-mono text-xs font-bold text-amber-200">
+                <span>
+                  Tap a card below to trade for{' '}
+                  {pendingSwapMode === 'swap_deck' ? 'a new Deck card' : `${topDiscardLabel}`}
+                </span>
+                <button
+                  onClick={() => setPendingSwapMode(null)}
+                  aria-label="Cancel Swap"
+                  className="ml-1 flex h-6 w-6 items-center justify-center text-white/80 hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+
+            <div className="flex items-end justify-center gap-2 sm:gap-3.5">
+              <AnimatePresence mode="popLayout">
+                {me?.hand.map((card, i) => {
+                  const mid = (me.hand.length - 1) / 2;
+                  const isSelected = selectedCardId === card.id;
+                  const isSwapTarget = !!pendingSwapMode && isMyTurn && gameState.currentPhase === 'CARD';
+                  const fanAngle = isSelected || isSwapTarget ? 0 : (i - mid) * 2.8;
+                  const fanLift = isSelected ? -16 : isSwapTarget ? -6 : Math.abs(i - mid) * 2.5;
+                  return (
+                    <motion.div
+                      key={card.id}
+                      layout
+                      initial={{ y: 55, opacity: 0, rotateY: 90, scale: 0.78 }}
+                      animate={{
+                        y: fanLift,
+                        rotate: fanAngle,
+                        opacity: 1,
+                        rotateY: 0,
+                        scale: isSelected ? 1.06 : isSwapTarget ? 1.02 : 1,
+                      }}
+                      exit={{ y: -55, opacity: 0, scale: 0.7 }}
+                      transition={{ type: 'spring', stiffness: 420, damping: 26 }}
+                      onMouseEnter={() => setHoveredCardId(card.id)}
+                      onMouseLeave={() => setHoveredCardId(curr => (curr === card.id ? null : curr))}
+                      className={`relative h-30 w-20.5 text-[48px] sm:h-38 sm:w-26 sm:text-[62px] ${
+                        isSwapTarget ? 'ring-2 ring-amber-400/80 rounded-lg' : ''
+                      }`}
+                    >
+                      <SabaccCard
+                        card={card}
+                        selected={isSelected || isSwapTarget}
+                        cardBack={dossier.selectedCardBack}
+                        lightMode={isLight}
+                        onClick={() => {
+                          if (isMyTurn && gameState.currentPhase === 'CARD') {
+                            if (pendingSwapMode) {
+                              sound('card');
+                              socket?.emit('cardAction', {
+                                action: pendingSwapMode,
+                                cardId: card.id,
+                              });
+                              setPendingSwapMode(null);
+                              setSelectedCardId(null);
+                            } else {
+                              sound('click');
+                              setSelectedCardId(prev => (prev === card.id ? null : card.id));
+                            }
+                          }
+                        }}
+                        className="h-full w-full"
+                      />
+                      {gameState.players[gameState.dealerIndex]?.id === me?.id && i === 0 && (
+                        <span className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-sm bg-amber-400 font-mono text-[10px] font-bold text-zinc-950 shadow">
+                          D
+                        </span>
+                      )}
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
+            </div>
+
+            {/* Single Crystal-Clear Hand Total Pill (Zero Cryptic Jargon) */}
+            {me && !me.isFolded && myEval && gameState.currentPhase !== 'JOINING' && (
+              <div className="flex flex-wrap items-center justify-center gap-2 font-mono text-xs">
+                <div
+                  className={`sw-cut-sm flex items-center gap-2 border px-4 py-1 ${
+                    myEval.sum === 0
+                      ? 'border-amber-400/75 bg-amber-500/20 text-amber-200 shadow-[0_0_22px_rgba(251,191,36,0.28)]'
+                      : 'border-white/15 bg-black/75 text-slate-200'
+                  }`}
+                >
+                  {myEval.sum === 0 ? (
+                    <>
+                      <Sparkles className="h-3.5 w-3.5 text-amber-400" />
+                      <span className="font-bold uppercase tracking-wider text-amber-300">
+                        0 · {myEval.rankName}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-slate-400">Total</span>
+                      <span className="text-sm font-bold text-amber-300">
+                        {myEval.sum > 0 ? `+${myEval.sum}` : myEval.sum}
+                      </span>
+                      <span className="text-white/25">•</span>
+                      <span className="text-[11px] text-cyan-200/80">Goal: 0</span>
+                    </>
+                  )}
+                </div>
+
+                {swapDiscardPreview && topDiscard && isMyTurn && gameState.currentPhase === 'CARD' && (
+                  <div className="sw-cut-sm flex items-center gap-1.5 border border-amber-400/50 bg-amber-950/80 px-3 py-1 text-xs text-amber-200">
+                    <span>
+                      Take {topDiscardLabel} →{' '}
+                      <strong>
+                        {swapDiscardPreview.sum === 0
+                          ? `0 (${swapDiscardPreview.rankName})`
+                          : `Total ${swapDiscardPreview.sum > 0 ? `+${swapDiscardPreview.sum}` : swapDiscardPreview.sum}`}
+                      </strong>
+                    </span>
                   </div>
                 )}
               </div>
-            </div>
-          )}
-
-          {gameState.currentPhase === 'DICE' && (
-            <motion.div 
-              initial={{ scale: 0, rotate: -180 }}
-              animate={{ scale: 1, rotate: 0 }}
-              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-2 p-3 sm:p-4 bg-black/95 border border-amber-500 rounded-2xl shadow-[0_0_40px_rgba(245,158,11,0.4)] z-20"
-            >
-              <div className="text-[8px] sm:text-[10px] uppercase tracking-[0.3em] text-amber-500 font-bold">
-                {isRollingDice ? "Rolling..." : "Dice Roll"}
-              </div>
-              <div className="flex gap-3 sm:gap-4">
-                {isRollingDice ? (
-                  <>
-                    <motion.div 
-                      animate={{ 
-                        rotate: [0, 90, 180, 270, 360], 
-                        scale: [1, 1.2, 1],
-                        x: [0, -5, 5, -5, 0],
-                        y: [0, 5, -5, 5, 0]
-                      }}
-                      transition={{ repeat: Infinity, duration: 0.15 }}
-                      className="w-10 h-10 sm:w-12 sm:h-12 bg-amber-500/20 border border-amber-500 text-amber-500 rounded-lg flex items-center justify-center text-xl sm:text-2xl font-bold"
-                    >
-                      ?
-                    </motion.div>
-                    <motion.div 
-                      animate={{ 
-                        rotate: [360, 270, 180, 90, 0], 
-                        scale: [1, 1.2, 1],
-                        x: [0, 5, -5, 5, 0],
-                        y: [0, -5, 5, -5, 0]
-                      }}
-                      transition={{ repeat: Infinity, duration: 0.15 }}
-                      className="w-10 h-10 sm:w-12 sm:h-12 bg-amber-500/20 border border-amber-500 text-amber-500 rounded-lg flex items-center justify-center text-xl sm:text-2xl font-bold"
-                    >
-                      ?
-                    </motion.div>
-                  </>
-                ) : (
-                  <>
-                    <div className="w-10 h-10 sm:w-12 sm:h-12 bg-amber-500 text-black rounded-lg flex items-center justify-center text-xl sm:text-2xl font-bold">
-                      {gameState.lastDiceRoll?.[0]}
-                    </div>
-                    <div className="w-10 h-10 sm:w-12 sm:h-12 bg-amber-500 text-black rounded-lg flex items-center justify-center text-xl sm:text-2xl font-bold">
-                      {gameState.lastDiceRoll?.[1]}
-                    </div>
-                  </>
-                )}
-              </div>
-              {!isRollingDice && gameState.lastDiceRoll?.[0] === gameState.lastDiceRoll?.[1] && (
-                <div className="text-red-500 font-bold uppercase tracking-widest text-[10px] animate-pulse">
-                  Sabacc Shift!
-                </div>
-              )}
-            </motion.div>
-          )}
-
-          {gameState.currentPhase === 'JOINING' && (
-            <div className="text-center z-10">
-              <h2 className="text-xl font-bold text-amber-500 mb-2 uppercase tracking-widest italic">
-                {me?.isSpectator ? 'Spectating Room' : 'Waiting for Players'}
-              </h2>
-              <div className="flex flex-col gap-2">
-                {!me?.isSpectator && (
-                  !me?.isReady ? (
-                    (me?.credits || 0) < 15 ? (
-                      <div className="flex flex-col gap-3">
-                        <div className="p-3 bg-red-900/20 border border-red-500/30 rounded-xl max-w-[200px] mx-auto">
-                          <p className="text-[10px] text-red-400 uppercase tracking-widest font-bold">Insufficient Credits</p>
-                          <p className="text-[9px] text-white/40 mt-1">You need at least 15 CR to pay the ante.</p>
-                        </div>
-                        <button 
-                          onClick={() => {
-                            playSound('click');
-                            setShowBuyIn(true);
-                          }}
-                          className="px-6 py-3 sm:py-2 bg-amber-500 text-black font-bold rounded-full hover:bg-amber-600 transition-all flex items-center gap-2 mx-auto text-sm shadow-lg shadow-amber-500/20"
-                        >
-                          <Coins className="w-4 h-4" /> Request Credits
-                        </button>
-                      </div>
-                    ) : (
-                      <button 
-                        onClick={() => {
-                          playSound('click');
-                          setReady();
-                        }}
-                        className="px-6 py-3 sm:py-2 bg-amber-500 text-black font-bold rounded-full hover:bg-amber-600 transition-all flex items-center gap-2 mx-auto text-sm"
-                      >
-                        <Play className="w-3 h-3" /> Ready
-                      </button>
-                    )
-                  ) : (
-                    <div className="text-white/60 animate-pulse text-xs">Waiting for others...</div>
-                  )
-                )}
-                
-                <button 
-                  onClick={handleJoinGame}
-                  className="px-4 py-2.5 sm:py-1.5 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all text-[10px] uppercase tracking-widest mx-auto mt-2"
-                >
-                  {me?.isSpectator ? 'Join Game' : 'Sit Out (Spectate)'}
-                </button>
-
-                {me?.isSpectator && (
-                  <div className="text-white/40 text-[10px] uppercase tracking-widest mt-1">You are observing the game</div>
-                )}
-
-                {!me?.isSpectator && gameState.players.length < 6 && (
-                  <button 
-                    onClick={() => {
-                      playSound('click');
-                      addAI();
-                    }}
-                    className="px-4 py-2.5 sm:py-1.5 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all text-xs flex items-center gap-2 mx-auto"
-                  >
-                    <User className="w-3 h-3" /> Add AI
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {gameState.currentPhase === 'SHOWDOWN' && (
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center z-20 bg-black/90 p-6 rounded-2xl border-2 border-amber-500 shadow-[0_0_50px_rgba(245,158,11,0.3)] w-full max-w-sm mx-auto">
-              <Trophy className="w-12 h-12 text-amber-500 mx-auto mb-4 animate-bounce" />
-              <h2 className="text-2xl font-bold text-amber-500 mb-1 uppercase italic tracking-tighter">Winner Announced</h2>
-              <div className="text-xl font-mono text-white mb-2">
-                {gameState.players.find(p => p.id === gameState.winnerId)?.name || "Unknown User"}
-              </div>
-              <p className="text-white/60 mb-6 text-xs uppercase tracking-widest">
-                {gameState.players.find(p => p.id === gameState.winnerId)?.hand && 
-                  evaluateHand(gameState.players.find(p => p.id === gameState.winnerId)!.hand).rankName}
-              </p>
-              {(me?.credits || 0) < 15 && !me?.isSpectator ? (
-                <button 
-                  onClick={() => {
-                    playSound('click');
-                    setShowBuyIn(true);
-                  }}
-                  className="w-full py-3 bg-amber-500 text-black font-bold rounded-xl hover:bg-amber-600 transition-all text-sm uppercase tracking-widest mb-2"
-                >
-                  Request Credits
-                </button>
-              ) : (
-                <button 
-                  onClick={() => {
-                    playSound('click');
-                    setReady();
-                  }}
-                  className="w-full py-3 bg-amber-500 text-black font-bold rounded-xl hover:bg-amber-600 transition-all text-sm uppercase tracking-widest mb-2"
-                >
-                  Next Game
-                </button>
-              )}
-              <button 
-                onClick={handleJoinGame}
-                className="w-full py-2 bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 rounded-xl transition-all text-[10px] uppercase tracking-widest"
-              >
-                {me?.isSpectator ? 'Join Next Game' : 'Sit Out (Spectate)'}
-              </button>
-            </div>
-          )}
-        </div>
-        </div>
-
-        {/* My Hand */}
-        <div className="w-full flex flex-col items-center gap-2 sm:gap-4 mb-4 sm:mb-8">
-          {myDisplayedPlayer?.hand.length === 0 && gameState.currentPhase !== 'JOINING' && (
-            <div className="text-amber-500/60 font-mono text-sm animate-pulse my-8">
-              Waiting for next game to start...
-            </div>
-          )}
-          <div className="flex gap-1 sm:gap-2 flex-wrap justify-center">
-            <AnimatePresence mode="popLayout">
-              {myDisplayedPlayer?.hand.map((card, i) => (
-                <motion.div
-                  key={card.id}
-                  layoutId={card.id}
-                  initial={{ y: 100, opacity: 0, rotateY: 90, scale: 0.5 }}
-                  animate={{ 
-                    y: selectedCardId === card.id ? -15 : 0, 
-                    opacity: 1,
-                    rotateY: 0,
-                    scale: selectedCardId === card.id ? 1.05 : 1
-                  }}
-                  exit={{ y: -100, opacity: 0, scale: 0.5 }}
-                  transition={{ 
-                    type: "spring",
-                    stiffness: 400,
-                    damping: 25,
-                    mass: 0.8,
-                    delay: i * 0.03 
-                  }}
-                  className="relative shrink-0 w-14 h-20 text-[40px] sm:w-20 sm:h-28 sm:text-[52px]"
-                >
-                  <SabaccCard
-                    card={card}
-                    selected={selectedCardId === card.id}
-                    onClick={() => isMyTurn && gameState.currentPhase === 'CARD' && setSelectedCardId(card.id === selectedCardId ? null : card.id)}
-                    className="w-full h-full"
-                  />
-
-                  {/* Dealer Button */}
-                  {gameState.players[gameState.dealerIndex]?.id === myDisplayedPlayer?.id && i === 0 && (
-                    <div className="absolute -top-2 -right-2 w-5 h-5 bg-amber-500 rounded-full border border-black flex items-center justify-center shadow-lg z-10" title="Dealer">
-                      <span className="text-[8px] font-bold text-black">D</span>
-                    </div>
-                  )}
-                </motion.div>
-              ))}
-            </AnimatePresence>
+            )}
           </div>
-          {myDisplayedPlayer && !myDisplayedPlayer.isFolded && (
-            <div className="px-3 py-1 bg-black/60 border border-white/10 rounded-full text-[10px] font-mono text-white/60 flex gap-3">
-              <div>
-                Val: <span className={myDisplayedPlayer.hand.reduce((a, c) => a + c.value, 0) === 0 ? 'text-amber-500 font-bold' : 'text-white'}>
-                  {myDisplayedPlayer.hand.reduce((a, c) => a + c.value, 0)}
-                </span>
-              </div>
-              <div className="border-l border-white/10 pl-3 text-amber-500/80">
-                {evaluateHand(myDisplayedPlayer.hand).rankName}
-              </div>
-            </div>
-          )}
         </div>
       </main>
 
-      {/* Controls & Logs */}
-      <footer className="p-3 sm:p-6 border-t border-white/5 bg-black/80 backdrop-blur-xl flex flex-col lg:flex-row gap-3 sm:gap-6 min-h-0 lg:min-h-[16rem] lg:h-64">
-        {/* Controls */}
-        <div className="flex-1 flex flex-col justify-center gap-3 sm:gap-4">
-          {me?.isSpectator ? (
-            <div className="flex flex-col items-center justify-center h-full gap-2 opacity-50">
-              <div className="w-12 h-12 rounded-full border-2 border-dashed border-white/20 flex items-center justify-center">
-                <User className="w-6 h-6 text-white/20" />
+      {/* SIMPLIFIED RIGHT-HANDED THUMB ACTION BAR (Zero sliders, comfy >= 52px targets) */}
+      <footer className="safe-bottom z-30 shrink-0 border-t border-white/10 bg-[#060a10]/94 px-3 pt-2.5 sm:px-6 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-xl flex-col gap-2">
+          {gameState.currentPhase === 'CARD' && isMyTurn ? (
+            selectedCardId ? (
+              /* Card Selected -> Cancel on Left, Swap Deck in Center, Primary Take Discard on Right (under right thumb!) */
+              <div className="space-y-1.5">
+                <div className="text-center font-mono text-[11px] text-amber-300">
+                  Choose where to trade your selected card:
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    onClick={() => {
+                      sound('click');
+                      setSelectedCardId(null);
+                      setPendingSwapMode(null);
+                    }}
+                    className="sw-cut-sm min-h-[52px] border border-white/15 bg-white/5 font-mono text-xs uppercase text-slate-300 hover:text-white active:scale-[0.97]"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      sound('card');
+                      socket?.emit('cardAction', { action: 'swap_deck', cardId: selectedCardId });
+                      setSelectedCardId(null);
+                      setPendingSwapMode(null);
+                    }}
+                    className="sw-cut-sm min-h-[52px] border border-cyan-400/60 bg-cyan-500/20 font-mono text-xs font-bold uppercase tracking-wider text-cyan-100 hover:bg-cyan-500/30 active:scale-[0.97]"
+                  >
+                    Swap Deck
+                  </button>
+
+                  <button
+                    disabled={!topDiscard}
+                    onClick={() => {
+                      sound('card');
+                      socket?.emit('cardAction', { action: 'swap_discard', cardId: selectedCardId });
+                      setSelectedCardId(null);
+                      setPendingSwapMode(null);
+                    }}
+                    className="sw-cut-sm min-h-[52px] bg-amber-400 font-mono text-xs font-bold uppercase tracking-wider text-zinc-950 hover:bg-amber-300 active:scale-[0.97] disabled:opacity-35"
+                  >
+                    {topDiscard ? `Take ${topDiscardLabel}` : 'Discard'}
+                  </button>
+                </div>
               </div>
-              <span className="text-xs uppercase tracking-[0.2em] text-white/40">Spectator Mode</span>
-              <span className="text-[10px] text-white/20 italic">Observe the game logic and player strategies</span>
-            </div>
-          ) : (
-            <>
-              {/* Turn order only means something once a hand is running; the
-                  lobby was announcing "Your Turn" with nothing to act on. */}
-              <div className="flex items-center gap-4 mb-1 sm:mb-2">
-                <div className={`w-3 h-3 rounded-full ${isMyTurn && isHandInPlay ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-                <span className={`text-base sm:text-2xl font-black uppercase tracking-widest ${isMyTurn && isHandInPlay ? 'text-amber-500 animate-pulse' : 'text-white/40'}`}>
-                  {!isHandInPlay
-                    ? (gameState.currentPhase === 'SHOWDOWN' ? 'Showdown' : 'Waiting for players')
-                    : isMyTurn
-                      ? 'Your Turn'
-                      : `Waiting for ${gameState.players[gameState.turnIndex]?.name}`}
-                </span>
-                {isMyTurn && gameState.currentPhase === 'CARD' && !selectedCardId && (
-                  <span className="text-[10px] text-amber-500/60 animate-pulse ml-auto">Select a card to swap</span>
-                )}
+            ) : (
+              /* Default Card Phase -> Draw on Left, Primary Stand on Right (under right thumb!) */
+              <div className="space-y-1.5">
+                <div className="text-center font-mono text-[11px] text-slate-400">
+                  Tap a card in your hand to swap it, or choose below:
+                </div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    onClick={() => {
+                      sound('card');
+                      socket?.emit('cardAction', { action: 'draw' });
+                      setSelectedCardId(null);
+                      setPendingSwapMode(null);
+                    }}
+                    disabled={(me?.hand.length ?? 0) >= 6}
+                    className="sw-cut-sm min-h-[52px] border border-cyan-400/55 bg-cyan-500/15 font-mono text-sm font-bold uppercase tracking-wider text-cyan-100 hover:bg-cyan-500/25 active:scale-[0.97] disabled:opacity-35"
+                  >
+                    Draw Card
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      sound('click');
+                      socket?.emit('cardAction', { action: 'stand' });
+                      setSelectedCardId(null);
+                      setPendingSwapMode(null);
+                    }}
+                    className="sw-cut-sm min-h-[52px] bg-amber-400 font-mono text-sm font-bold uppercase tracking-wider text-zinc-950 hover:bg-amber-300 active:scale-[0.97]"
+                  >
+                    Stand
+                  </button>
+                </div>
               </div>
+            )
+          ) : gameState.currentPhase === 'BETTING' && isMyTurn && me ? (
+            (() => {
+              const step2x = Math.min(
+                maxRaiseAdd,
+                Math.max(minRaiseAdd, gameState.settings.ante * 2 === minRaiseAdd ? minRaiseAdd * 2 : gameState.settings.ante * 2)
+              );
+              const potPreset = Math.min(maxRaiseAdd, Math.max(minRaiseAdd, gameState.handPot));
+              const activeBet = Math.min(maxRaiseAdd, Math.max(minRaiseAdd, parseInt(betAmount) || minRaiseAdd));
 
-              <div className="flex flex-wrap gap-2 sm:gap-3">
-                {me?.credits === 0 && (
-                  <div className="w-full flex flex-col items-center gap-2 p-4 bg-red-900/20 border border-red-500/30 rounded-xl">
-                    <span className="text-red-500 font-bold uppercase tracking-widest text-sm">Out of Credits</span>
-                    <button 
-                      onClick={() => { playSound('click'); setShowBuyIn(true); }}
-                      className="px-6 py-3 sm:py-2 bg-amber-500 text-black font-bold rounded-full hover:bg-amber-600 transition-all uppercase tracking-widest text-xs"
-                    >
-                      Request Credits
-                    </button>
-                  </div>
-                )}
-
-                {gameState.currentPhase === 'CARD' && isMyTurn && (
-                  <>
-                    <button onClick={() => { playSound('card'); cardAction('draw'); }} className="flex-1 min-w-[80px] py-3 sm:py-4 bg-black/60 border border-amber-500/50 hover:bg-amber-500/20 text-amber-500 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(245,158,11,0.1)]">DRAW</button>
-                    <button 
-                      disabled={!selectedCardId}
-                      onClick={() => { playSound('card'); cardAction('swap_deck', selectedCardId!); }} 
-                      className={`flex-1 min-w-[80px] py-3 sm:py-4 bg-black/60 border border-blue-500/50 hover:bg-blue-500/20 text-blue-400 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(59,130,246,0.1)] ${!selectedCardId ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      SWAP DECK
-                    </button>
-                    <button 
-                      disabled={!selectedCardId || gameState.discardPile.length === 0}
-                      onClick={() => { playSound('card'); cardAction('swap_discard', selectedCardId!); }} 
-                      className={`flex-1 min-w-[80px] py-3 sm:py-4 bg-black/60 border border-purple-500/50 hover:bg-purple-500/20 text-purple-400 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(168,85,247,0.1)] ${(!selectedCardId || gameState.discardPile.length === 0) ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      SWAP DISCARD
-                    </button>
-                    <button onClick={() => { playSound('click'); cardAction('stand'); }} className="flex-1 min-w-[80px] py-3 sm:py-4 bg-black/60 border border-white/30 hover:bg-white/10 text-white/80 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs">STAND</button>
-                  </>
-                )}
-
-                {gameState.currentPhase === 'BETTING' && isMyTurn && (
-                  <>
-                    <div className="flex-1 min-w-[120px] flex flex-col gap-2">
-                      <div className="flex items-center gap-1">
-                        <button 
-                          onClick={() => { playSound('click'); setBetAmount(prev => Math.max(1, parseInt(prev) - 10).toString()); }}
-                          className="w-7 h-7 sm:w-10 sm:h-10 bg-white/5 border border-white/10 rounded-lg flex items-center justify-center hover:bg-white/10 transition-colors"
-                        >
-                          -
-                        </button>
-                        <input 
-                          type="number" 
-                          value={betAmount}
-                          onChange={(e) => setBetAmount(e.target.value)}
-                          className="flex-1 bg-black border border-white/20 rounded-lg py-1 text-center font-mono text-sm sm:text-lg w-12"
-                        />
-                        <button 
-                          onClick={() => { playSound('click'); setBetAmount(prev => (parseInt(prev) + 10).toString()); }}
-                          className="w-7 h-7 sm:w-10 sm:h-10 bg-white/5 border border-white/10 rounded-lg flex items-center justify-center hover:bg-white/10 transition-colors"
-                        >
-                          +
-                        </button>
-                      </div>
-                      <div className="flex gap-1">
-                        {[10, 50, 100].map(val => (
-                          <button 
-                            key={val}
-                            onClick={() => { playSound('click'); setBetAmount(prev => (parseInt(prev) + val).toString()); }}
-                            className="flex-1 py-1 bg-white/5 border border-white/10 rounded text-[9px] hover:bg-white/10 transition-colors"
+              return (
+                <div className="space-y-2">
+                  {/* Comfy 4-Chip Preset Row — Zero Sliders! */}
+                  {maxRaiseAdd > 0 && (
+                    <div className="grid grid-cols-4 gap-2 font-mono text-xs">
+                      {[
+                        { id: 'min', label: `Min ${minRaiseAdd}`, val: minRaiseAdd },
+                        { id: 'mid', label: `2× (${step2x})`, val: step2x },
+                        { id: 'pot', label: `Pot (${potPreset})`, val: potPreset },
+                      ].map(chip => {
+                        const isPicked = activeBet === chip.val;
+                        return (
+                          <button
+                            key={chip.id}
+                            onClick={() => {
+                              sound('click');
+                              setBetAmount(String(chip.val));
+                            }}
+                            className={`sw-cut-sm min-h-[44px] border font-bold uppercase transition-colors active:scale-[0.97] ${
+                              isPicked
+                                ? 'border-amber-400 bg-amber-500/25 text-amber-300'
+                                : 'border-white/15 bg-white/[0.05] text-slate-300 hover:text-white'
+                            }`}
                           >
-                            +{val}
+                            {chip.label}
                           </button>
-                        ))}
-                      </div>
-                      <button onClick={() => { playSound('chips'); betAction(gameState.currentBet === 0 ? 'bet' : 'raise', betAmount); }} className="w-full py-3 bg-amber-500 text-black hover:bg-amber-400 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_15px_rgba(245,158,11,0.4)]">
-                        {gameState.currentBet === 0 ? 'Bet' : 'Raise'}
+                        );
+                      })}
+
+                      <button
+                        onClick={() => {
+                          sound('click');
+                          setShowAllInConfirm(true);
+                        }}
+                        className="sw-cut-sm min-h-[44px] border border-rose-400/45 bg-rose-500/15 font-bold uppercase text-rose-300 hover:bg-rose-500/25 active:scale-[0.97]"
+                      >
+                        {cappedByLimit ? `Max ${mySpendable}` : 'All In'}
                       </button>
                     </div>
-                    <div className="flex-1 flex flex-col gap-2">
-                      {gameState.currentBet > (me?.betThisRound || 0) ? (
-                        <button onClick={() => { playSound('chips'); betAction('call'); }} className="w-full py-3 bg-black/60 border border-green-500/50 hover:bg-green-500/20 text-green-400 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(34,197,94,0.1)]">CALL ({gameState.currentBet - (me?.betThisRound || 0)})</button>
-                      ) : (
-                        <button onClick={() => { playSound('check'); betAction('check'); }} className="w-full py-3 bg-black/60 border border-blue-500/50 hover:bg-blue-500/20 text-blue-400 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(59,130,246,0.1)]">CHECK</button>
-                      )}
-                      <div className="flex gap-2">
-                        <button onClick={() => { playSound('fold'); betAction('fold'); }} className="flex-1 py-3 bg-black/60 border border-red-500/50 hover:bg-red-500/20 text-red-500 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(239,68,68,0.1)]">FOLD</button>
-                        <button onClick={() => { playSound('click'); setShowAllInConfirm(true); }} className="flex-1 py-3 bg-black/60 border border-amber-500/50 hover:bg-amber-500/20 text-amber-500 rounded-lg font-bold transition-all uppercase tracking-widest text-[10px] sm:text-xs shadow-[0_0_10px_rgba(245,158,11,0.1)]">ALL IN</button>
-                      </div>
-                    </div>
-                  </>
+                  )}
+
+                  {/* Fold (Far Left) | Check/Call (Center) | Bet/Raise (Right Thumb Primary!) */}
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      onClick={() => {
+                        sound('fold');
+                        socket?.emit('betAction', { action: 'fold' });
+                      }}
+                      className="sw-cut-sm min-h-[52px] border border-rose-500/50 bg-rose-500/15 font-mono text-xs sm:text-sm font-bold uppercase tracking-wider text-rose-300 hover:bg-rose-500/25 active:scale-[0.97]"
+                    >
+                      Fold
+                    </button>
+
+                    {callDue > 0 ? (
+                      <button
+                        onClick={() => {
+                          sound('chips');
+                          socket?.emit('betAction', { action: 'call' });
+                        }}
+                        className="sw-cut-sm min-h-[52px] border border-emerald-400/60 bg-emerald-500/20 font-mono text-xs sm:text-sm font-bold uppercase tracking-wider text-emerald-200 hover:bg-emerald-500/30 active:scale-[0.97]"
+                      >
+                        Call {Math.min(mySpendable, callDue)}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          sound('check');
+                          socket?.emit('betAction', { action: 'check' });
+                        }}
+                        className="sw-cut-sm min-h-[52px] border border-cyan-400/55 bg-cyan-500/20 font-mono text-xs sm:text-sm font-bold uppercase tracking-wider text-cyan-100 hover:bg-cyan-500/30 active:scale-[0.97]"
+                      >
+                        Check
+                      </button>
+                    )}
+
+                    <button
+                      disabled={maxRaiseAdd <= 0}
+                      onClick={() => {
+                        sound('chips');
+                        socket?.emit('betAction', {
+                          action: gameState.currentBet === 0 ? 'bet' : 'raise',
+                          amount: String(activeBet),
+                        });
+                      }}
+                      className="sw-cut-sm min-h-[52px] bg-amber-400 font-mono text-xs sm:text-sm font-bold uppercase tracking-wider text-zinc-950 hover:bg-amber-300 active:scale-[0.97] disabled:bg-white/10 disabled:text-slate-500"
+                    >
+                      {gameState.currentBet === 0 ? `Bet ${activeBet}` : `Raise +${activeBet}`}
+                    </button>
+                  </div>
+                </div>
+              );
+            })()
+          ) : (
+            <div className="flex min-h-[44px] w-full items-center justify-between font-mono text-xs">
+              <div className="flex items-center gap-2.5 text-slate-300">
+                <span
+                  className={`h-2 w-2 rotate-45 ${
+                    isHandInPlay ? 'animate-pulse bg-cyan-400' : 'bg-amber-400/70'
+                  }`}
+                />
+                <span className="uppercase tracking-wider">
+                  {gameState.currentPhase === 'DICE'
+                    ? 'Rolling Spike Dice...'
+                    : gameState.currentPhase === 'SHOWDOWN'
+                      ? 'Hand Complete'
+                      : gameState.currentPhase === 'JOINING'
+                        ? 'Ready to Deal'
+                        : `${gameState.players[gameState.turnIndex]?.name ?? 'Player'}'s Turn`}
+                </span>
+                {turnRemainingSec !== null && (
+                  <span className="text-amber-300">{turnRemainingSec}s</span>
                 )}
               </div>
-            </>
+
+              {!me?.isSpectator && (
+                <div className="relative">
+                  <button
+                    onClick={() => setShowEmotes(v => !v)}
+                    className="sw-cut-sm flex min-h-[40px] items-center gap-1.5 border border-white/15 bg-white/[0.04] px-3.5 text-xs uppercase tracking-wider text-slate-200 hover:border-amber-400/40 hover:text-amber-300"
+                  >
+                    <Smile className="h-4 w-4" /> Quip
+                  </button>
+
+                  <AnimatePresence>
+                    {showEmotes && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 8 }}
+                        className="sw-cut absolute bottom-12 right-0 z-50 w-56 border border-cyan-400/35 bg-[#080d14] p-1.5 shadow-2xl"
+                      >
+                        {QUICK_EMOTES.map(q => (
+                          <button
+                            key={q}
+                            onClick={() => {
+                              sound('click');
+                              socket?.emit('emote', { text: q });
+                              setShowEmotes(false);
+                            }}
+                            className="block min-h-[38px] w-full px-3 py-1.5 text-left font-mono text-xs text-slate-200 hover:bg-cyan-500/15 hover:text-cyan-200"
+                          >
+                            “{q}”
+                          </button>
+                        ))}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )}
+            </div>
           )}
         </div>
-
-        {/* Logs & Chat. Collapsed by default on phones so the table and the
-            action buttons fit one screen; always open from lg upwards. */}
-        <div className="lg:flex-1 lg:w-96 bg-black/40 border border-white/10 rounded-xl p-3 sm:p-4 flex flex-col gap-2">
-          <button
-            type="button"
-            onClick={() => { playSound('click'); setShowLog(v => !v); }}
-            aria-expanded={showLog}
-            className="flex justify-between items-center w-full lg:cursor-default min-h-11 lg:min-h-0"
-          >
-            <span className="text-[10px] uppercase tracking-widest text-white/40">Comms Log</span>
-            <span className="text-[10px] uppercase tracking-widest text-amber-500/60 lg:hidden">
-              {showLog ? 'Hide' : `Show (${gameState.logs.length + gameState.messages.length})`}
-            </span>
-          </button>
-          <div className={`${showLog ? 'flex' : 'hidden'} lg:flex flex-1 flex-col overflow-y-auto space-y-1 pr-2 custom-scrollbar max-h-32 lg:max-h-none`}>
-            {/* System Logs */}
-            {gameState.logs.slice(-10).map((log, i) => (
-              <div key={`log-${i}`} className="text-[10px] font-mono text-white/40 leading-tight italic">
-                {log}
-              </div>
-            ))}
-            {/* Chat Messages */}
-            {gameState.messages.map((msg, i) => (
-              <div key={`msg-${i}`} className="text-[11px] font-mono leading-tight">
-                <span className="text-amber-500 mr-2">{msg.sender}:</span>
-                <span className="text-white/80">{msg.text}</span>
-              </div>
-            ))}
-            <div ref={logsEndRef} />
-          </div>
-          <form onSubmit={sendChatMessage} className={`${showLog ? 'flex' : 'hidden'} lg:flex mt-2 gap-2`}>
-            <input 
-              type="text" 
-              value={chatMessage}
-              onChange={(e) => setChatMessage(e.target.value)}
-              placeholder="Type message..."
-              className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-2.5 sm:py-1.5 text-base sm:text-xs focus:outline-none focus:border-amber-500/50 transition-colors"
-            />
-            <button type="submit" className="p-1.5 min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 inline-flex items-center justify-center bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-500 hover:bg-amber-500 hover:text-black transition-all">
-              <Play className="w-3 h-3" />
-            </button>
-          </form>
-        </div>
-
-        {/* My Stats */}
-        <div className="hidden lg:flex w-48 flex-col justify-center items-end gap-1">
-          <span className="text-[10px] uppercase tracking-widest text-white/40">Active User</span>
-          <span className="text-xl font-mono text-amber-500">{me?.name}</span>
-          <div className="flex items-center gap-2 text-[10px] text-white/40 uppercase tracking-widest">
-            <User className="w-3 h-3" /> Status: {me?.isFolded ? 'Folded' : 'In Game'}
-          </div>
-        </div>
       </footer>
-
-      <style jsx global>{`
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 4px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: transparent;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(255, 255, 255, 0.1);
-          border-radius: 10px;
-        }
-      `}</style>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 {
   "name": "sabacc",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "build:host": "node scripts/build-host.mjs",
-    "build:apk": "node scripts/build-apk.mjs"
+    "build:apk": "node scripts/build-apk.mjs",
+    "showcase": "node scripts/capture-showcase.mjs"
   },
   "dependencies": {
     "autoprefixer": "^10.4.21",
